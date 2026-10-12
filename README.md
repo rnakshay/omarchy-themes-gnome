@@ -30,6 +30,10 @@ Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` 
 
 ## Use
 
+**Quick Settings** (top-right menu): the *Theme* tile shows the current theme; click it for the
+list, with a *Change wallpaper too* switch and a link to the full app. Needs one log-out after the
+first install, as GNOME only loads new extensions at login.
+
 Open **Omarchy Themes** from Activities and click one to preview it full screen: Omarchy's screenshot,
 then each wallpaper (←/→ or swipe), and ↑/↓ moves to the previous/next theme. **Apply ▾**
 offers *Theme and Wallpaper* (Enter), *Theme Only* (T — keeps your wallpaper, including your own
@@ -57,7 +61,10 @@ omarchy-theme reset                  # restore everything from before the first 
   templates are reused, so upstream fixes arrive with `sync`.
 - `tests/check-upstream.py` checks the colour resolver still matches Omarchy's
   `omarchy-theme-color` for every theme, and that every template renders. Run it after `sync`.
-- The picker is an ordinary GTK app, not a Shell extension, so GNOME releases don't break it.
+- The picker is an ordinary GTK app, so GNOME releases don't break it. The Quick Settings
+  extension (`extension/`) is deliberately thin: it lists themes and runs `omarchy-theme`, so a
+  GNOME release that breaks it only costs the tile, and the fix is small. Its `shell-version`
+  lists only releases it has been run on.
 
 ## License
 
