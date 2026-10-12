@@ -31,10 +31,9 @@ Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` 
 ## Use
 
 Open **Themes** from Activities and click one to preview it full screen: Omarchy's screenshot,
-then each wallpaper (←/→ or swipe), and ↑/↓ moves to the previous/next theme. **Apply** (or Enter)
-uses the theme and wallpaper on screen; **Wallpaper Only** (or W) takes just the picture and keeps
-the current colours; Esc closes. *Keep Wallpaper When Switching Themes* in the menu leaves your
-wallpaper (including your own, set in GNOME Settings) alone. Or:
+then each wallpaper (←/→ or swipe), and ↑/↓ moves to the previous/next theme. **Apply ▾**
+offers *Theme and Wallpaper* (Enter), *Theme Only* (T — keeps your wallpaper, including your own
+from GNOME Settings) and *Wallpaper Only* (W — keeps the current colours). Esc closes. Or:
 
 ```bash
 omarchy-theme list

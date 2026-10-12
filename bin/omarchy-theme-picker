@@ -109,13 +109,22 @@ class Preview(Adw.Window):
         header = Adw.HeaderBar()
         self.heading = Adw.WindowTitle()
         header.set_title_widget(self.heading)
-        apply = Gtk.Button(label="Apply Theme", tooltip_text="Enter")
+        choices = Gio.Menu()
+        choices.append("Theme and Wallpaper (Enter)", "preview.both")
+        choices.append("Theme Only (T)", "preview.theme")
+        choices.append("Wallpaper Only (W)", "preview.wallpaper")
+        actions = Gio.SimpleActionGroup()
+        for mode in ("both", "theme", "wallpaper"):
+            action = Gio.SimpleAction.new(mode, None)
+            action.connect("activate", lambda _a, _p, m=mode: self.apply(m))
+            actions.add_action(action)
+        self.insert_action_group("preview", actions)
+        self.wallpaper_action = actions.lookup_action("wallpaper")
+        apply = Adw.SplitButton(label="Apply", menu_model=choices,
+                                tooltip_text="Theme and wallpaper — the arrow has the other choices")
         apply.add_css_class("suggested-action")
-        apply.connect("clicked", lambda *_: self.apply())
+        apply.connect("clicked", lambda *_: self.apply("both"))
         header.pack_end(apply)
-        self.wall_only = Gtk.Button(label="Wallpaper Only", tooltip_text="W — keep the current colours")
-        self.wall_only.connect("clicked", lambda *_: self.apply_wallpaper())
-        header.pack_end(self.wall_only)
         view.add_top_bar(header)
 
         self.view = view
@@ -188,7 +197,7 @@ class Preview(Adw.Window):
         current = " · current" if self.name == ot.current() else ""
         self.heading.set_title(f"{ot.title(self.name)}{current}")
         where = self.pages[self.target][0] if self.pages else "No images"
-        self.wall_only.set_sensitive(self.shown_wallpaper() is not None)
+        self.wallpaper_action.set_enabled(self.shown_wallpaper() is not None)
         self.heading.set_subtitle(f"{where} — theme {self.index + 1} of {len(self.themes)}")
 
     def step(self, delta):
@@ -227,9 +236,11 @@ class Preview(Adw.Window):
         elif keyval == Gdk.KEY_Up:
             self.show_theme(self.index - 1)
         elif keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
-            self.apply()
+            self.apply("both")
+        elif keyval in (Gdk.KEY_t, Gdk.KEY_T):
+            self.apply("theme")
         elif keyval in (Gdk.KEY_w, Gdk.KEY_W):
-            self.apply_wallpaper()
+            self.apply("wallpaper")
         else:
             return False
         return True
@@ -239,16 +250,13 @@ class Preview(Adw.Window):
         path = self.pages[self.target][1] if self.pages else None
         return self.walls.index(path) + 1 if path in self.walls else None
 
-    def apply(self):
-        index = self.shown_wallpaper() or 1
-        self.close()
-        self.parent_window.apply(self.name, index)
-
-    def apply_wallpaper(self):
+    def apply(self, mode):
+        """mode: "both", "theme" (colours, wallpaper untouched) or "wallpaper" (the one on screen only)."""
         index = self.shown_wallpaper()
-        if index is not None:
-            self.close()
-            self.parent_window.apply_wallpaper(self.name, index)
+        if mode == "wallpaper" and index is None:
+            return  # the Omarchy screenshot is not a wallpaper
+        self.close()
+        self.parent_window.apply(self.name, mode, index or 1)
 
 
 class Card(Gtk.FlowBoxChild):
@@ -338,7 +346,6 @@ class Window(Adw.ApplicationWindow):
     def _menu(self):
         menu = Gio.Menu()
         menu.append("Recolour GNOME Apps", "win.recolor")
-        menu.append("Keep Wallpaper When Switching Themes", "win.keep-wallpaper")
         menu.append("Also Theme Chrome (asks for password)", "win.chrome")
         menu.append("Update Themes from Omarchy", "win.sync")
         menu.append("Restore Original Settings…", "win.reset")
@@ -347,10 +354,6 @@ class Window(Adw.ApplicationWindow):
                                                GLib.Variant.new_boolean(self.prefs.get("chrome", False)))
         chrome.connect("change-state", self.on_pref, "chrome")
         self.add_action(chrome)
-        keep = Gio.SimpleAction.new_stateful("keep-wallpaper", None,
-                                             GLib.Variant.new_boolean(self.prefs.get("keep_wallpaper", False)))
-        keep.connect("change-state", self.on_pref, "keep_wallpaper")
-        self.add_action(keep)
         recolor = Gio.SimpleAction.new_stateful("recolor", None, GLib.Variant.new_boolean(
             bool(ot.load_settings().get("recolor_apps"))))
         recolor.connect("change-state", self.on_recolor)
@@ -399,12 +402,12 @@ class Window(Adw.ApplicationWindow):
         themes = [(c.name, c.theme_dir) for c in self.cards.values()]
         Preview(self, themes, list(self.cards).index(card.name)).present()
 
-    def apply(self, name, wallpaper=1):
+    def apply(self, name, mode, wallpaper=1):
+        if mode == "wallpaper":
+            return self.run(["wallpaper", name, str(wallpaper)], f"Wallpaper from {ot.title(name)}")
         args = ["set", name, "--wallpaper", str(wallpaper)]
-        skip = []
-        if not self.prefs.get("chrome", False):
-            skip.append("chrome")
-        if self.prefs.get("keep_wallpaper", False):
+        skip = [] if self.prefs.get("chrome", False) else ["chrome"]
+        if mode == "theme":
             skip.append("wallpaper")
         if skip:
             args += ["--skip", ",".join(skip)]
@@ -412,10 +415,7 @@ class Window(Adw.ApplicationWindow):
         def done():
             for n, c in self.cards.items():
                 c.set_current(n == name)
-        self.run(args, f"{ot.title(name)} applied", done)
-
-    def apply_wallpaper(self, name, index):
-        self.run(["wallpaper", name, str(index)], f"Wallpaper from {ot.title(name)}")
+        self.run(args, f"{ot.title(name)} applied" + (", wallpaper kept" if mode == "theme" else ""), done)
 
     def on_reset(self, *_):
         dialog = Adw.AlertDialog(heading="Restore original settings?",
