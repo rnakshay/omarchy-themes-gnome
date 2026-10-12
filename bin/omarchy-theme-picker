@@ -15,6 +15,13 @@ gi.require_version("Adw", "1")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
+try:  # glycin: GNOME's image loader, reads the webp wallpapers GTK can't
+    gi.require_version("Gly", "2")
+    gi.require_version("GlyGtk4", "2")
+    from gi.repository import Gly, GlyGtk4  # noqa: E402
+except (ValueError, ImportError):
+    Gly = None
+
 APP_ID = "io.github.rnakshay.OmarchyThemes"
 CLI = Path(__file__).resolve().parent / "omarchy-theme"
 
@@ -33,6 +40,7 @@ CSS = """
 .theme-card { padding: 6px; border-radius: 14px; }
 .theme-card picture { border-radius: 10px; }
 .swatch { min-width: 18px; min-height: 10px; border-radius: 3px; }
+.preview-stage { background: black; }
 """
 
 
@@ -65,6 +73,117 @@ def thumbnail(name, theme_dir):
             return None
         pixbuf.savev(str(dest), "png", [], [])
     return dest
+
+
+def wallpapers(theme_dir):
+    """Same files, same order as the CLI's --wallpaper index."""
+    return sorted(p for p in (theme_dir / "backgrounds").glob("*")
+                  if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
+
+
+def load_texture(path):
+    """Full-size texture, off the main thread. None if nothing can read the file."""
+    if Gly is not None:
+        try:
+            frame = Gly.Loader.new(Gio.File.new_for_path(str(path))).load().next_frame()
+            return GlyGtk4.frame_get_texture(frame)
+        except GLib.Error:
+            pass
+    try:
+        return Gdk.Texture.new_from_filename(str(path))
+    except GLib.Error:
+        return None
+
+
+class Preview(Adw.Window):
+    """Full-screen look at a theme: Omarchy's screenshot, then each wallpaper. Apply uses the one shown."""
+
+    def __init__(self, parent, name, theme_dir):
+        super().__init__(transient_for=parent, modal=True, title=ot.title(name))
+        self.parent_window = parent
+        self.name = name
+        shot = theme_dir / "preview.png"
+        self.walls = wallpapers(theme_dir)
+        self.pages = ([("Screenshot from Omarchy (GNOME keeps its own layout)", shot)] if shot.is_file() else []) + \
+            [(f"Wallpaper {i} of {len(self.walls)}", p) for i, p in enumerate(self.walls, 1)]
+
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        self.heading = Adw.WindowTitle(title=ot.title(name))
+        header.set_title_widget(self.heading)
+        apply = Gtk.Button(label="Apply")
+        apply.add_css_class("suggested-action")
+        apply.connect("clicked", lambda *_: self.apply())
+        header.pack_end(apply)
+        view.add_top_bar(header)
+
+        self.carousel = Adw.Carousel(hexpand=True, vexpand=True, allow_scroll_wheel=True)
+        self.carousel.add_css_class("preview-stage")
+        self.pictures = []
+        for _, path in self.pages:
+            picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, hexpand=True, vexpand=True)
+            self.carousel.append(picture)
+            self.pictures.append(picture)
+        self.carousel.connect("page-changed", lambda *_: (self.update_title(), self.load_around()))
+        view.set_content(self.carousel)
+
+        dots = Adw.CarouselIndicatorDots(carousel=self.carousel, margin_top=6, margin_bottom=6)
+        view.add_bottom_bar(dots)
+        self.set_content(view)
+
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_key)
+        self.add_controller(keys)
+
+        self.requested = set()
+        self.update_title()
+        self.fullscreen()
+        self.load_around()
+
+    def load_around(self, center=None):
+        """Only the shown image and its neighbours: some wallpapers are 8K, and this is an 8 GB laptop."""
+        center = self.page() if center is None else center
+        for i in (center, center + 1, center - 1):
+            if 0 <= i < len(self.pages) and i not in self.requested:
+                self.requested.add(i)
+                threading.Thread(target=self._load, args=(i,), daemon=True).start()
+
+    def _load(self, i):
+        texture = load_texture(self.pages[i][1])
+        if texture is not None:
+            GLib.idle_add(self.pictures[i].set_paintable, texture)
+
+    def page(self):
+        return round(self.carousel.get_position())
+
+    def update_title(self):
+        if self.pages:
+            self.heading.set_subtitle(self.pages[self.page()][0])
+
+    def step(self, delta):
+        target = min(max(self.page() + delta, 0), len(self.pictures) - 1)
+        if self.pictures:
+            self.load_around(target)
+            self.carousel.scroll_to(self.pictures[target], True)
+
+    def on_key(self, controller, keyval, keycode, state):
+        if keyval == Gdk.KEY_Escape:
+            self.close()
+        elif keyval in (Gdk.KEY_Right, Gdk.KEY_space):
+            self.step(1)
+        elif keyval == Gdk.KEY_Left:
+            self.step(-1)
+        elif keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self.apply()
+        else:
+            return False
+        return True
+
+    def apply(self):
+        path = self.pages[self.page()][1] if self.pages else None
+        index = self.walls.index(path) + 1 if path in self.walls else 1
+        self.close()
+        self.parent_window.apply(self.name, index)
 
 
 class Card(Gtk.FlowBoxChild):
@@ -115,7 +234,7 @@ class Card(Gtk.FlowBoxChild):
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         box.append(swatches)
         self.set_child(box)
-        self.set_tooltip_text(f"Apply {ot.title(name)}")
+        self.set_tooltip_text(f"Preview {ot.title(name)}")
 
     def set_current(self, current):
         self.check.set_visible(current)
@@ -207,14 +326,17 @@ class Window(Adw.ApplicationWindow):
                  lambda: action.set_state(value))
 
     def on_activated(self, flow, card):
-        args = ["set", card.name]
+        Preview(self, card.name, card.theme_dir).present()
+
+    def apply(self, name, wallpaper=1):
+        args = ["set", name, "--wallpaper", str(wallpaper)]
         if not self.prefs.get("chrome", False):
             args += ["--skip", "chrome"]
 
         def done():
-            for name, c in self.cards.items():
-                c.set_current(name == card.name)
-        self.run(args, f"{ot.title(card.name)} applied", done)
+            for n, c in self.cards.items():
+                c.set_current(n == name)
+        self.run(args, f"{ot.title(name)} applied", done)
 
     def on_reset(self, *_):
         dialog = Adw.AlertDialog(heading="Restore original settings?",
