@@ -1,7 +1,0 @@
-{
-  "uuid": "omarchy-themes@rnakshay.github.io",
-  "name": "Omarchy Themes",
-  "description": "Switch between Omarchy themes from Quick Settings. Needs the omarchy-theme command from Omarchy Themes for GNOME, which does the actual theming. Unofficial; not affiliated with Omarchy.",
-  "shell-version": ["50"],
-  "url": "https://github.com/rnakshay/omarchy-themes-gnome"
-}
