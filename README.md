@@ -4,7 +4,16 @@ Use [Omarchy](https://github.com/omacom/omarchy)'s themes on a regular GNOME des
 recolours GNOME, your terminal, VS Code and btop, and sets a matching wallpaper.
 Unofficial — not affiliated with Omarchy or Basecamp.
 
+![Osaka Jade on GNOME: Files, Ptyxis running btop, and VS Code, all in the theme's colours, over its wallpaper](docs/screenshots/desktop.png)
+
+*Osaka Jade on stock GNOME: Files (with accent-coloured folders), Ptyxis running btop, and VS Code.
+Windows, top bar and layout stay GNOME's — it changes colours and wallpaper, not how GNOME works.*
+
+![The same desktop in the Activities overview](docs/screenshots/overview.png)
+
 ## The app
+
+![The Omarchy Themes app: theme cards with preview images and colour swatches, and the ☰ menu open](docs/screenshots/app-grid.png)
 
 Open **Omarchy Themes** from Activities. Every Omarchy theme is shown as a card with its preview
 and colour palette; the current one has a check mark.
@@ -20,6 +29,8 @@ of its wallpapers:
 | T | apply the theme only — keeps your wallpaper, including your own from GNOME Settings |
 | W | apply the wallpaper only — keeps the current colours |
 | Esc | close without changing anything |
+
+![Full-screen preview of an Osaka Jade wallpaper, with the Apply menu open](docs/screenshots/app-preview.png)
 
 The same three choices are on the **Apply ▾** button. Mixing is easy: find a wallpaper you like
 in any theme and press W, then find the colours you want and press T.
