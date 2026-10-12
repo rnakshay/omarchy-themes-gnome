@@ -2,7 +2,8 @@
 
 Use [Omarchy](https://github.com/omacom/omarchy)'s themes on a regular GNOME desktop: one click
 recolours GNOME, your terminal, VS Code and btop, and sets a matching wallpaper.
-Unofficial — not affiliated with Omarchy or Basecamp.
+Unofficial — not affiliated with or endorsed by Omarchy, the Omacom Foundation, 37signals or
+Basecamp. Omarchy is a trademark of its owner.
 
 ![Osaka Jade on GNOME: Files, Ptyxis running btop, and VS Code, all in the theme's colours, over its wallpaper](docs/screenshots/desktop.png)
 
@@ -72,7 +73,8 @@ cd omarchy-themes-gnome
 ./install.sh --uninstall
 ```
 
-Nothing needs root, and nothing keeps running unless you tick *Coloured Folders*. With it on,
+The first start downloads Omarchy's themes (about 60 MB, mostly wallpapers). Nothing needs
+root, and nothing keeps running unless you tick *Coloured Folders*. With it on,
 untick and tick it again after a GNOME update, so the icons are rebuilt from the new Adwaita.
 
 Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+; `dwebp` (libwebp-tools) and

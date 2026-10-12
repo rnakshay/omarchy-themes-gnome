@@ -52,14 +52,20 @@ def run(*cmd, check=True, **kw):
 
 # ── Upstream themes ──────────────────────────────────────────────────────────
 
+# Only what's used: each theme's colours, preview and wallpapers, plus Omarchy's templates. The
+# boot-screen intro videos (~215 MB) are left out, and a blobless clone never downloads them.
+SPARSE = ["/themes/", "!/themes/*/backgrounds/intros/", "/default/themed/"]
+
+
 def sync():
     if (UPSTREAM / ".git").is_dir():
+        run("git", "-C", str(UPSTREAM), "sparse-checkout", "set", "--no-cone", *SPARSE)  # older installs had the intros
         run("git", "-C", str(UPSTREAM), "pull", "--quiet", "--ff-only")
     else:
         DATA.mkdir(parents=True, exist_ok=True)
         run("git", "clone", "--quiet", "--depth", "1", "--filter=blob:none", "--sparse",
             UPSTREAM_URL, str(UPSTREAM))
-        run("git", "-C", str(UPSTREAM), "sparse-checkout", "set", "themes", "default/themed")
+        run("git", "-C", str(UPSTREAM), "sparse-checkout", "set", "--no-cone", *SPARSE)
 
 
 def ensure_upstream():
