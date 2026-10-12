@@ -11,10 +11,10 @@ import colorsys
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import zlib
 from pathlib import Path
 
@@ -131,7 +131,8 @@ def parse_alacritty(path):
     for k in ("background", "foreground"):
         if k in primary:
             colors[k] = primary[k]
-    return {k: v.replace("0x", "#") for k, v in colors.items()}
+    # Same character check as colors.toml: values end up inside CSS, JSON and INI files.
+    return {k: v.replace("0x", "#") for k, v in colors.items() if isinstance(v, str) and VALUE_RE.match(v)}
 
 
 def mix(start, end, amount):
@@ -387,6 +388,10 @@ OPTION_APPS = {"ptyxis": "ptyxis", "vscode": "code", "btop": "btop"}
 FOLLOW_UNIT = "omarchy-theme-follow-accent.service"
 UNIT_DIR = HOME / ".config/systemd/user"
 ICONS_SRC = DATA / "adwaita-colors"
+# The setup script runs on this machine, so it is pinned to a reviewed commit rather than whatever
+# is newest. Bump deliberately, after reading the diff.
+ICONS_URL = "https://github.com/dpejoh/Adwaita-colors"
+ICONS_COMMIT = "7d838af258da4ca05040760301d05140aa858145"
 
 
 def unit_enabled():
@@ -424,10 +429,12 @@ def set_folders(on):
     user service keeps the icon theme on the accent, including manual changes in Settings."""
     unit = UNIT_DIR / FOLLOW_UNIT
     if on:
-        if (ICONS_SRC / ".git").is_dir():
-            run("git", "-C", str(ICONS_SRC), "pull", "--quiet", "--ff-only", check=False)
-        else:
-            run("git", "clone", "--quiet", "--depth", "1", "https://github.com/dpejoh/Adwaita-colors", str(ICONS_SRC))
+        if not (ICONS_SRC / ".git").is_dir():
+            run("git", "init", "--quiet", str(ICONS_SRC))
+        run("git", "-C", str(ICONS_SRC), "fetch", "--quiet", "--depth", "1", ICONS_URL, ICONS_COMMIT)
+        run("git", "-C", str(ICONS_SRC), "checkout", "--quiet", "--force", "--detach", ICONS_COMMIT)
+        if run("git", "-C", str(ICONS_SRC), "rev-parse", "HEAD").stdout.strip() != ICONS_COMMIT:
+            sys.exit("Adwaita-colors is not at the reviewed commit; not running its setup.")
         run(str(ICONS_SRC / "setup"), "-i")  # (re)builds from the current Adwaita, so also right after GNOME updates
         exe = shutil.which("omarchy-theme") or str(Path(__file__).resolve())
         UNIT_DIR.mkdir(parents=True, exist_ok=True)
@@ -665,19 +672,28 @@ def chrome_policy_dirs():
     return [Path(d) for d in CHROME_POLICY_DIRS if Path(d).is_dir() and not Path(d).is_symlink()]
 
 
+CHROME_POLICY_FILES = {f"{d}/color.json" for d in CHROME_POLICY_DIRS}
+POLICY_RE = re.compile(r'\{"BrowserThemeColor": "#[0-9A-Fa-f]{6}", "BrowserColorScheme": "device"\}\n')
+
+
 def write_root_files(files):
-    """files: {dest: content or None (delete)}. One sudo/pkexec prompt for the lot."""
-    with tempfile.TemporaryDirectory() as tmp:
-        script = ["set -e"]
-        for i, (dest, content) in enumerate(files.items()):
-            if content is None:
-                script.append(f"rm -f '{dest}'")
-            else:
-                staged = Path(tmp) / str(i)
-                staged.write_text(content)
-                script.append(f"install -m 0644 -o root -g root -T '{staged}' '{dest}'")
-        elevate = ["sudo"] if sys.stdin.isatty() else ["pkexec"]
-        subprocess.run(elevate + ["sh", "-c", "\n".join(script)], check=True)
+    """files: {dest: content or None (delete)}. One sudo/pkexec prompt for the lot.
+
+    Requests can come from the reset snapshot, which lives in the user's home, so nothing in them is
+    trusted with root: only the known policy paths, only content in the exact shape this tool writes,
+    shell-quoted, and written by root directly rather than copied from a user-writable temp file."""
+    script = ["set -e", "umask 022"]
+    for dest, content in files.items():
+        if dest not in CHROME_POLICY_FILES:
+            raise ValueError(f"refusing to touch {dest} as root")
+        if content is None:
+            script.append(f"rm -f {shlex.quote(dest)}")
+        elif POLICY_RE.fullmatch(content):
+            script.append(f"printf %s {shlex.quote(content)} > {shlex.quote(dest)}")
+        else:
+            raise ValueError(f"refusing to write unexpected content to {dest}")
+    elevate = ["sudo"] if sys.stdin.isatty() else ["pkexec"]
+    subprocess.run(elevate + ["sh", "-c", "\n".join(script)], check=True)
 
 
 def apply_chrome(name, theme_dir, trusted, c):
@@ -876,6 +892,8 @@ def cmd_reset(args):
             write_root_files(chrome)
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("  – chrome: needs admin rights; left as is")
+        except ValueError as e:
+            print(f"  – chrome: {e}; left as is")
     remove_recolor()
     CURRENT.unlink(missing_ok=True)
     WALLPAPER.unlink(missing_ok=True)
