@@ -1,5 +1,5 @@
 #!/bin/bash
-# Put omarchy-theme on PATH and the Themes picker in Activities. Re-run after moving the repo.
+# Omarchy Themes for GNOME: put omarchy-theme on PATH and the picker in Activities. Re-run after moving the repo.
 # Nothing here needs root; ./install.sh --uninstall removes what it added.
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")" && pwd)
@@ -25,13 +25,13 @@ ln -sf "$REPO/bin/omarchy-theme-picker" "$BIN/omarchy-theme-picker"
 cat >"$DESKTOP" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Themes
-GenericName=Omarchy Themes
+Name=Omarchy Themes
+GenericName=Omarchy Themes for GNOME
 Comment=Switch the desktop, terminal and editor to an Omarchy theme
 Exec=$BIN/omarchy-theme-picker
 Icon=preferences-desktop-appearance
 Categories=Settings;DesktopSettings;GTK;
-Keywords=omarchy;theme;colors;wallpaper;dark;light;
+Keywords=omarchy;themes;theme;colors;wallpaper;dark;light;
 StartupNotify=true
 DBusActivatable=false
 DESKTOP
@@ -65,4 +65,4 @@ UNITFILE
 systemctl --user daemon-reload
 systemctl --user enable --now "$UNIT" >/dev/null 2>&1
 systemctl --user restart "$UNIT"
-echo "Installed: 'omarchy-theme' on PATH, 'Themes' in Activities, folders follow the accent colour."
+echo "Installed: 'omarchy-theme' on PATH, 'Omarchy Themes' in Activities, folders follow the accent colour."

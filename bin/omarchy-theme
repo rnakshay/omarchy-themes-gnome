@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply Omarchy themes to a GNOME desktop.
+"""Omarchy Themes for GNOME: apply Omarchy themes to a GNOME desktop.
 
 Reads a theme's colors.toml the way Omarchy does (bin/omarchy-theme-color) and
 renders configs for the apps a GNOME desktop actually runs: GNOME itself,

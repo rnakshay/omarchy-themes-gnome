@@ -1,4 +1,4 @@
-# omarchy-themes-gnome
+# Omarchy Themes for GNOME
 
 Use [Omarchy](https://github.com/omacom/omarchy)'s themes on a regular GNOME desktop.
 Unofficial — not affiliated with Omarchy or Basecamp.
@@ -19,7 +19,7 @@ Pick a theme and it is applied to:
 ## Install
 
 ```bash
-./install.sh            # omarchy-theme on PATH, "Themes" in Activities, accent-coloured folders
+./install.sh            # omarchy-theme on PATH, "Omarchy Themes" in Activities, accent-coloured folders
 ./install.sh --uninstall
 ```
 
@@ -30,7 +30,7 @@ Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` 
 
 ## Use
 
-Open **Themes** from Activities and click one to preview it full screen: Omarchy's screenshot,
+Open **Omarchy Themes** from Activities and click one to preview it full screen: Omarchy's screenshot,
 then each wallpaper (←/→ or swipe), and ↑/↓ moves to the previous/next theme. **Apply ▾**
 offers *Theme and Wallpaper* (Enter), *Theme Only* (T — keeps your wallpaper, including your own
 from GNOME Settings) and *Wallpaper Only* (W — keeps the current colours). Esc closes. Or:

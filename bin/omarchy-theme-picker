@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Point-and-click theme picker. All the work is done by omarchy-theme; this only calls it."""
+"""Omarchy Themes for GNOME — point-and-click theme picker. All the work is done by omarchy-theme; this only calls it."""
 
 import importlib.machinery
 import importlib.util
@@ -315,7 +315,7 @@ class Card(Gtk.FlowBoxChild):
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Themes", default_width=1080, default_height=720)
+        super().__init__(application=app, title="Omarchy Themes", default_width=1080, default_height=720)
         self.prefs = load_prefs()
         self.busy = False
 
