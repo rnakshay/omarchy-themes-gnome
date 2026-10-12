@@ -1,0 +1,631 @@
+#!/usr/bin/env python3
+"""Apply Omarchy themes to a GNOME desktop.
+
+Reads a theme's colors.toml the way Omarchy does (bin/omarchy-theme-color) and
+renders configs for the apps a GNOME desktop actually runs: GNOME itself,
+Ptyxis, VS Code, btop and Chrome. Unofficial; not affiliated with Omarchy.
+"""
+
+import argparse
+import colorsys
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import zlib
+from pathlib import Path
+
+HOME = Path.home()
+REPO = Path(__file__).resolve().parent.parent
+TEMPLATES = REPO / "templates"
+
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "omarchy-themes-gnome"
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "omarchy-themes-gnome"
+CONFIG = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "omarchy-themes-gnome"
+
+UPSTREAM_URL = "https://github.com/omacom/omarchy.git"
+UPSTREAM = DATA / "upstream"
+UPSTREAM_THEMES = UPSTREAM / "themes"
+UPSTREAM_TEMPLATES = UPSTREAM / "default/themed"
+USER_THEMES = CONFIG / "themes"
+
+CURRENT = STATE / "current"
+ORIGINAL = STATE / "original.json"
+
+TARGETS = ["gnome", "wallpaper", "ptyxis", "vscode", "btop", "chrome"]
+
+
+def log(ok, target, msg=""):
+    mark = "✓" if ok else "–"
+    print(f"  {mark} {target}{': ' + msg if msg else ''}")
+
+
+def run(*cmd, check=True, **kw):
+    return subprocess.run(cmd, check=check, text=True, capture_output=True, **kw)
+
+
+# ── Upstream themes ──────────────────────────────────────────────────────────
+
+def sync():
+    if (UPSTREAM / ".git").is_dir():
+        run("git", "-C", str(UPSTREAM), "pull", "--quiet", "--ff-only")
+    else:
+        DATA.mkdir(parents=True, exist_ok=True)
+        run("git", "clone", "--quiet", "--depth", "1", "--filter=blob:none", "--sparse",
+            UPSTREAM_URL, str(UPSTREAM))
+        run("git", "-C", str(UPSTREAM), "sparse-checkout", "set", "themes", "default/themed")
+
+
+def ensure_upstream():
+    if not UPSTREAM_THEMES.is_dir():
+        print("Fetching Omarchy themes…")
+        sync()
+
+
+def slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def title(name):
+    return " ".join(w.capitalize() for w in name.split("-"))
+
+
+def all_themes():
+    """name -> (dir, trusted). User-installed themes override official ones but are untrusted."""
+    ensure_upstream()
+    themes = {}
+    for base, trusted in ((UPSTREAM_THEMES, True), (USER_THEMES, False)):
+        if base.is_dir():
+            for d in sorted(base.iterdir()):
+                if d.is_dir() and ((d / "colors.toml").is_file() or (d / "alacritty.toml").is_file()):
+                    themes[d.name] = (d, trusted)
+    return themes
+
+
+# ── colors.toml resolution — a port of omarchy-theme-color ───────────────────
+
+VALUE_RE = re.compile(r"^[A-Za-z0-9#(),._+/% -]*$")
+HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def parse_colors(path):
+    colors = {}
+    for line in path.read_text().splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = re.sub(r"[\"' ]", "", key)
+        if not key or key.startswith("#"):
+            continue
+        m = re.search(r"[\"']([^\"']*)[\"']", value)
+        value = m.group(1) if m else value.strip()
+        if re.fullmatch(r"[A-Za-z0-9_-]+", key) and VALUE_RE.match(value):
+            colors[key] = value
+    return colors
+
+
+def parse_alacritty(path):
+    """Older community themes ship only alacritty.toml; take its ANSI palette."""
+    import tomllib
+    data = tomllib.loads(path.read_text()).get("colors", {})
+    names = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"]
+    colors = {}
+    for i, n in enumerate(names):
+        if n in data.get("normal", {}):
+            colors[f"color{i}"] = data["normal"][n]
+        if n in data.get("bright", {}):
+            colors[f"color{i + 8}"] = data["bright"][n]
+    primary = data.get("primary", {})
+    for k in ("background", "foreground"):
+        if k in primary:
+            colors[k] = primary[k]
+    return {k: v.replace("0x", "#") for k, v in colors.items()}
+
+
+def mix(start, end, amount):
+    amount = str(amount)
+    a = float(amount.rstrip("%")) / 100 if amount.endswith("%") else float(amount)
+    if not amount.endswith("%") and a > 1:
+        a /= 100
+    a = min(max(a, 0), 1)
+    s = [int(start[i:i + 2], 16) for i in (1, 3, 5)]
+    e = [int(end[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(int(s[i] * (1 - a) + e[i] * a + 0.5) for i in range(3))
+
+
+def resolve(theme_dir):
+    if (theme_dir / "colors.toml").is_file():
+        c = parse_colors(theme_dir / "colors.toml")
+    else:
+        c = parse_alacritty(theme_dir / "alacritty.toml")
+
+    def alias(key, fallback):
+        if not c.get(key) and c.get(fallback):
+            c[key] = c[fallback]
+
+    legacy_palette = {"background": "bg", "dark_background": "dark_bg", "darker_background": "darker_bg",
+                      "lighter_background": "lighter_bg", "foreground": "fg", "dark_foreground": "dark_fg",
+                      "light_foreground": "light_fg", "bright_foreground": "bright_fg"}
+    for k, v in legacy_palette.items():
+        alias(k, v)
+
+    alias("background", "color0")
+    alias("foreground", "color7")
+    if c.get("background"):
+        c["color0"] = c["background"]
+    if c.get("foreground"):
+        c["color7"] = c["foreground"]
+
+    for k, v in {"red": "color1", "green": "color2", "yellow": "color3", "blue": "color4",
+                 "magenta": "color5", "cyan": "color6", "bright_red": "color9", "bright_green": "color10",
+                 "bright_yellow": "color11", "bright_blue": "color12", "bright_magenta": "color13",
+                 "bright_cyan": "color14"}.items():
+        alias(k, v)
+    alias("magenta", "purple")
+    alias("bright_magenta", "bright_purple")
+
+    c.setdefault("light_foreground", c.get("color7") or c["foreground"])
+    c.setdefault("bright_foreground", c.get("color15") or c["foreground"])
+    c["cursor"] = c["bright_foreground"]
+    c.setdefault("lighter_background", c.get("color0") or c["background"])
+    c.setdefault("dark_foreground", c.get("color8") or c["foreground"])
+    c.setdefault("muted", c.get("color8") or c["dark_foreground"])
+    c.setdefault("selection", c.get("selection_background") or c.get("color8") or c.get("color0") or c["background"])
+    c.setdefault("selection_background", c["selection"])
+    c.setdefault("selection_foreground", c["bright_foreground"])
+    c.setdefault("orange", c["yellow"])
+    c.setdefault("brown", mix(c["orange"], "#000000", "50%"))
+
+    c.setdefault("dark_background", mix(c["background"], "#000000", "25%"))
+    c.setdefault("darker_background", mix(c["background"], "#000000", "50%"))
+    for k in ("red", "yellow", "green", "cyan", "blue", "magenta"):
+        c.setdefault(f"bright_{k}", mix(c[k], "#ffffff", "20%"))
+    alias("purple", "magenta")
+    alias("bright_purple", "bright_magenta")
+
+    for k, v in {"color0": "background", "color1": "red", "color2": "green", "color3": "yellow",
+                 "color4": "blue", "color5": "magenta", "color6": "cyan", "color7": "foreground",
+                 "color8": "muted", "color9": "bright_red", "color10": "bright_green",
+                 "color11": "bright_yellow", "color12": "bright_blue", "color13": "bright_magenta",
+                 "color14": "bright_cyan", "color15": "bright_foreground"}.items():
+        alias(k, v)
+    for k, v in legacy_palette.items():
+        if c.get(k):
+            c[v] = c[k]
+
+    mode = c.get("mode") or c.get("theme_type")
+    if not mode:
+        if (theme_dir / "light.mode").is_file():
+            mode = "light"
+        elif HEX_RE.match(c["background"]):
+            mode = "light" if sum(int(c["background"][i:i + 2], 16) for i in (1, 3, 5)) > 382 else "dark"
+        else:
+            mode = "dark"
+    c["mode"] = c["theme_type"] = mode
+    return c
+
+
+# ── Template rendering — {{ key }}, {{ key_strip }}, {{ key_rgb }}, {{ mix a b n% }} ──
+
+TOKEN_RE = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
+
+
+def render(text, colors):
+    def sub(m):
+        parts = m.group(1).split()
+        if len(parts) == 4 and parts[0] in ("mix", "mix_strip", "mix_rgb"):
+            fn, a, b, amount = parts
+            if HEX_RE.match(colors.get(a, "")) and HEX_RE.match(colors.get(b, "")):
+                return fmt(mix(colors[a], colors[b], amount), fn[3:])
+        elif len(parts) == 1:
+            key = parts[0]
+            if key in colors:
+                return colors[key]
+            for suffix in ("_strip", "_rgb"):
+                if key.endswith(suffix) and key[:-len(suffix)] in colors:
+                    return fmt(colors[key[:-len(suffix)]], suffix)
+        return m.group(0)
+    return TOKEN_RE.sub(sub, text)
+
+
+def fmt(value, suffix):
+    if suffix == "_strip":
+        return value.lstrip("#")
+    if suffix == "_rgb" and HEX_RE.match(value):
+        return ",".join(str(int(value[i:i + 2], 16)) for i in (1, 3, 5))
+    return value
+
+
+def template(name, colors):
+    for base in (CONFIG / "themed", TEMPLATES, UPSTREAM_TEMPLATES):
+        if (base / name).is_file():
+            return render((base / name).read_text(), colors)
+    raise FileNotFoundError(name)
+
+
+# ── Original-state snapshot, so `reset` can put everything back ──────────────
+
+def gget(schema, key):
+    return run("gsettings", "get", schema, key).stdout.strip()
+
+
+def gset(schema, key, value):
+    run("gsettings", "set", schema, key, value)
+
+
+GNOME_KEYS = [
+    ("org.gnome.desktop.interface", "color-scheme"),
+    ("org.gnome.desktop.interface", "accent-color"),
+    ("org.gnome.desktop.interface", "icon-theme"),
+    ("org.gnome.desktop.interface", "gtk-theme"),
+    ("org.gnome.desktop.background", "picture-uri"),
+    ("org.gnome.desktop.background", "picture-uri-dark"),
+    ("org.gnome.desktop.background", "picture-options"),
+]
+VSCODE_KEYS = ["workbench.colorTheme", "workbench.preferredDarkColorTheme", "workbench.preferredLightColorTheme"]
+
+
+def snapshot():
+    if ORIGINAL.exists():
+        return
+    snap = {"gsettings": {f"{s} {k}": gget(s, k) for s, k in GNOME_KEYS}}
+    profile = ptyxis_profile()
+    if profile:
+        snap["ptyxis"] = gget(profile, "palette")
+    settings = vscode_settings()
+    if settings.is_file():
+        text = settings.read_text()
+        snap["vscode"] = {k: jsonc_get(text, k) for k in VSCODE_KEYS}
+    conf = HOME / ".config/btop/btop.conf"
+    snap["btop"] = conf.read_text() if conf.is_file() else None
+    snap["chrome"] = {str(d): (d / "color.json").read_text() if (d / "color.json").is_file() else None
+                      for d in chrome_policy_dirs()}
+    STATE.mkdir(parents=True, exist_ok=True)
+    ORIGINAL.write_text(json.dumps(snap, indent=2) + "\n")
+
+
+# ── Targets ──────────────────────────────────────────────────────────────────
+
+# GNOME 47+ accent colours (libadwaita's palette).
+GNOME_ACCENTS = {"blue": "#3584e4", "teal": "#2190a4", "green": "#3a944a", "yellow": "#c88800",
+                 "orange": "#ed5b00", "red": "#e62d42", "pink": "#d56199", "purple": "#9141ac"}
+
+
+def hls(hexcolor):
+    return colorsys.rgb_to_hls(*(int(hexcolor[i:i + 2], 16) / 255 for i in (1, 3, 5)))
+
+
+def nearest_accent(hexcolor):
+    h, _, s = hls(hexcolor)
+    if s < 0.15:
+        return "slate"
+
+    def dist(name):
+        d = abs(hls(GNOME_ACCENTS[name])[0] - h)
+        return min(d, 1 - d)
+    return min(GNOME_ACCENTS, key=dist)
+
+
+def icon_theme_installed(name):
+    return any((p / name).is_dir() for p in (Path("/usr/share/icons"), HOME / ".local/share/icons",
+                                             HOME / ".icons"))
+
+
+def apply_gnome(name, theme_dir, trusted, c):
+    dark = c["mode"] != "light"
+    gset("org.gnome.desktop.interface", "color-scheme", "prefer-dark" if dark else "prefer-light")
+    # GTK3 apps ignore color-scheme; keep whichever Adwaita-style theme is in use (adw-gtk3 or stock).
+    base = "adw-gtk3" if gget("org.gnome.desktop.interface", "gtk-theme").strip("'").startswith("adw-gtk3") \
+        else "Adwaita"
+    gset("org.gnome.desktop.interface", "gtk-theme", base + "-dark" if dark else base)
+    accent = nearest_accent(c.get("accent", c["blue"]))
+    gset("org.gnome.desktop.interface", "accent-color", accent)
+    msg = f"{'dark' if dark else 'light'}, accent {accent}"
+
+    icons = (theme_dir / "icons.theme").read_text().strip() if (theme_dir / "icons.theme").is_file() else ""
+    if icons and icon_theme_installed(icons):
+        gset("org.gnome.desktop.interface", "icon-theme", icons)
+        msg += f", icons {icons}"
+    elif icons:
+        msg += f" (icons {icons} not installed: sudo dnf install yaru-icon-theme)"
+    log(True, "gnome", msg)
+
+
+def apply_wallpaper(name, theme_dir, trusted, c, index=1):
+    bgs = sorted(p for p in (theme_dir / "backgrounds").glob("*")
+                 if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
+    if not bgs:
+        return log(False, "wallpaper", "theme ships none")
+    src = bgs[(index - 1) % len(bgs)]
+    out = DATA / "backgrounds"
+    out.mkdir(parents=True, exist_ok=True)
+    if src.suffix.lower() == ".webp":
+        # GNOME's background loader is not reliably webp-aware; PNG always works.
+        dest = out / f"{name}-{src.stem}.png"
+        if not dest.exists():
+            run("dwebp", "-quiet", str(src), "-o", str(dest))
+    else:
+        dest = out / f"{name}-{src.name}"
+        shutil.copyfile(src, dest)
+    uri = dest.as_uri()
+    gset("org.gnome.desktop.background", "picture-uri", uri)
+    gset("org.gnome.desktop.background", "picture-uri-dark", uri)
+    gset("org.gnome.desktop.background", "picture-options", "zoom")
+    log(True, "wallpaper", f"{src.name} ({(index - 1) % len(bgs) + 1} of {len(bgs)})")
+
+
+def ptyxis_profile():
+    if not shutil.which("ptyxis"):
+        return None
+    uuid = gget("org.gnome.Ptyxis", "default-profile-uuid").strip("'")
+    return f"org.gnome.Ptyxis.Profile:/org/gnome/Ptyxis/Profiles/{uuid}/"
+
+
+def apply_ptyxis(name, theme_dir, trusted, c):
+    profile = ptyxis_profile()
+    if not profile:
+        return log(False, "ptyxis", "not installed")
+    palettes = HOME / ".local/share/org.gnome.Ptyxis/palettes"
+    palettes.mkdir(parents=True, exist_ok=True)
+    # One file per theme: Ptyxis keys palettes by file name, so a new name is
+    # what makes an already-open window pick the change up.
+    for old in palettes.glob("omarchy-*.palette"):
+        old.unlink()
+    pid = f"omarchy-{name}"
+    (palettes / f"{pid}.palette").write_text(template("ptyxis.palette.tpl", {**c, "title": f"Omarchy {title(name)}"}))
+    gset(profile, "palette", f"'{pid}'")
+    log(True, "ptyxis", f"palette {pid}")
+
+
+def vscode_settings():
+    return HOME / ".config/Code/User/settings.json"
+
+
+def jsonc_get(text, key):
+    m = re.search(r'"%s"\s*:\s*("(?:[^"\\]|\\.)*")' % re.escape(key), text)
+    return json.loads(m.group(1)) if m else None
+
+
+def jsonc_set(text, key, value):
+    """settings.json is JSONC (comments, trailing commas), so edit in place rather than round-trip."""
+    pattern = re.compile(r'("%s"\s*:\s*)"(?:[^"\\]|\\.)*"' % re.escape(key))
+    if value is None:
+        return re.sub(r'\s*"%s"\s*:\s*"(?:[^"\\]|\\.)*"\s*,?' % re.escape(key), "", text, count=1)
+    if pattern.search(text):
+        return pattern.sub(lambda m: m.group(1) + json.dumps(value), text, count=1)
+    return text.replace("{", "{\n  %s: %s," % (json.dumps(key), json.dumps(value)), 1)
+
+
+def vscode_extension_installed(ext_id):
+    base = HOME / ".vscode/extensions"
+    return base.is_dir() and any(d.name.lower().startswith(ext_id.lower() + "-") for d in base.iterdir())
+
+
+def install_generated_vscode_theme(c):
+    """Untrusted or descriptor-less themes: build the colours into a local extension, as Omarchy does."""
+    base = HOME / ".vscode/extensions"
+    ext = base / "omarchy-themes-gnome"
+    (ext / "themes").mkdir(parents=True, exist_ok=True)
+    theme_json = template("vscode-theme.json.tpl", c)
+    (ext / "themes/omarchy-color-theme.json").write_text(theme_json)
+    # Version follows the content: VS Code only reloads a theme whose extension version changed.
+    version = f"1.0.{zlib.crc32(theme_json.encode())}"
+    (ext / "package.json").write_text(json.dumps({
+        "name": "omarchy-themes-gnome", "displayName": "Omarchy (GNOME)", "publisher": "local",
+        "version": version, "engines": {"vscode": "^1.70.0"}, "categories": ["Themes"],
+        "contributes": {"themes": [{"label": "Omarchy", "uiTheme": "vs" if c["mode"] == "light" else "vs-dark",
+                                    "path": "./themes/omarchy-color-theme.json", "_watch": True}]},
+    }, indent=2))
+    registry = base / "extensions.json"
+    entries = json.loads(registry.read_text()) if registry.is_file() else []
+    entries = [e for e in entries if e.get("identifier", {}).get("id") != "local.omarchy-themes-gnome"]
+    entries.append({"identifier": {"id": "local.omarchy-themes-gnome"}, "version": version,
+                    "location": {"$mid": 1, "fsPath": str(ext), "external": ext.as_uri(), "path": str(ext),
+                                 "scheme": "file"},
+                    "relativeLocation": ext.name})
+    registry.write_text(json.dumps(entries))
+    return "Omarchy"
+
+
+def apply_vscode(name, theme_dir, trusted, c):
+    if not shutil.which("code"):
+        return log(False, "vscode", "not installed")
+    descriptor = theme_dir / "vscode.json"
+    theme_name = None
+    if trusted and descriptor.is_file():
+        # A VS Code extension is arbitrary code, so only official themes may name one.
+        d = json.loads(descriptor.read_text())
+        theme_name, ext_id = d.get("name"), d.get("extension", "")
+        if re.fullmatch(r"[A-Za-z0-9._-]+", ext_id) and not vscode_extension_installed(ext_id):
+            print(f"    installing VS Code extension {ext_id}…")
+            run("code", "--install-extension", ext_id)
+    if not theme_name:
+        theme_name = install_generated_vscode_theme(c)
+
+    path = vscode_settings()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = path.read_text() if path.is_file() else "{\n}\n"
+    text = jsonc_set(text, "workbench.colorTheme", theme_name)
+    # With window.autoDetectColorScheme on, VS Code ignores colorTheme in favour of these.
+    key = "workbench.preferredLightColorTheme" if c["mode"] == "light" else "workbench.preferredDarkColorTheme"
+    text = jsonc_set(text, key, theme_name)
+    path.write_text(text)
+    log(True, "vscode", theme_name)
+
+
+def apply_btop(name, theme_dir, trusted, c):
+    if not shutil.which("btop"):
+        return log(False, "btop", "not installed")
+    themes = HOME / ".config/btop/themes"
+    themes.mkdir(parents=True, exist_ok=True)
+    (themes / "omarchy.theme").write_text(template("btop.theme.tpl", c))
+    conf = HOME / ".config/btop/btop.conf"
+    text = conf.read_text() if conf.is_file() else ""
+    line = 'color_theme = "omarchy"'
+    text = re.sub(r"(?m)^color_theme\s*=.*$", line, text) if re.search(r"(?m)^color_theme\s*=", text) \
+        else text + line + "\n"
+    conf.write_text(text)
+    run("pkill", "-USR2", "-x", "btop", check=False)  # btop reloads its theme on SIGUSR2
+    log(True, "btop")
+
+
+CHROME_POLICY_DIRS = ["/etc/opt/chrome/policies/managed", "/etc/chromium/policies/managed",
+                      "/etc/opt/edge/policies/managed", "/etc/brave/policies/managed"]
+
+
+def chrome_policy_dirs():
+    return [Path(d) for d in CHROME_POLICY_DIRS if Path(d).is_dir() and not Path(d).is_symlink()]
+
+
+def write_root_files(files):
+    """files: {dest: content or None (delete)}. One sudo/pkexec prompt for the lot."""
+    with tempfile.TemporaryDirectory() as tmp:
+        script = ["set -e"]
+        for i, (dest, content) in enumerate(files.items()):
+            if content is None:
+                script.append(f"rm -f '{dest}'")
+            else:
+                staged = Path(tmp) / str(i)
+                staged.write_text(content)
+                script.append(f"install -m 0644 -o root -g root -T '{staged}' '{dest}'")
+        elevate = ["sudo"] if sys.stdin.isatty() else ["pkexec"]
+        subprocess.run(elevate + ["sh", "-c", "\n".join(script)], check=True)
+
+
+def apply_chrome(name, theme_dir, trusted, c):
+    dirs = chrome_policy_dirs()
+    if not dirs:
+        return log(False, "chrome", "no policy directory (create /etc/opt/chrome/policies/managed to enable)")
+    color = "#%02x%02x%02x" % tuple(int(x) for x in template("chromium.theme.tpl", c).strip().split(","))
+    want = '{"BrowserThemeColor": "%s", "BrowserColorScheme": "device"}\n' % color
+    todo = {str(d / "color.json"): want for d in dirs
+            if not (d / "color.json").is_file() or (d / "color.json").read_text() != want}
+    if todo:
+        try:
+            write_root_files(todo)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return log(False, "chrome", "needs admin rights; skipped")
+    for proc, browser in (("chrome", "google-chrome-stable"), ("chromium", "chromium-browser")):
+        if shutil.which(browser) and run("pgrep", "-x", proc, check=False).returncode == 0:
+            subprocess.Popen([browser, "--refresh-platform-policy", "--no-startup-window"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log(True, "chrome", f"toolbar {color}")
+
+
+APPLY = {"gnome": apply_gnome, "wallpaper": apply_wallpaper, "ptyxis": apply_ptyxis,
+         "vscode": apply_vscode, "btop": apply_btop, "chrome": apply_chrome}
+
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+def current():
+    return CURRENT.read_text().strip() if CURRENT.is_file() else None
+
+
+def cmd_list(args):
+    cur = current()
+    for name, (_, trusted) in all_themes().items():
+        print(f"{'*' if name == cur else ' '} {name}{'' if trusted else '  (installed)'}")
+
+
+def cmd_set(args):
+    themes = all_themes()
+    name = slug(args.theme)
+    if name not in themes:
+        sys.exit(f"No theme '{args.theme}'. See: omarchy-theme list")
+    theme_dir, trusted = themes[name]
+    colors = resolve(theme_dir)
+    skip = set(args.skip.split(",")) if args.skip else set()
+    snapshot()
+    print(f"Applying {title(name)}")
+    for target in TARGETS:
+        if target in skip:
+            log(False, target, "skipped")
+            continue
+        try:
+            if target == "wallpaper":
+                apply_wallpaper(name, theme_dir, trusted, colors, args.wallpaper)
+            else:
+                APPLY[target](name, theme_dir, trusted, colors)
+        except Exception as e:  # one broken target must not stop the rest
+            log(False, target, f"failed: {e}")
+    CURRENT.write_text(name + "\n")
+
+
+def cmd_current(args):
+    print(current() or "none")
+
+
+def cmd_colors(args):
+    themes = all_themes()
+    name = slug(args.theme) if args.theme else current()
+    if name not in themes:
+        sys.exit("No such theme")
+    for k, v in sorted(resolve(themes[name][0]).items()):
+        swatch = "\033[48;2;%d;%d;%dm      \033[0m " % tuple(int(v[i:i + 2], 16) for i in (1, 3, 5)) \
+            if HEX_RE.match(v) else "       "
+        print(f"{swatch}{k:22} {v}")
+
+
+def cmd_sync(args):
+    sync()
+    print(f"Themes up to date in {UPSTREAM_THEMES}")
+
+
+def cmd_reset(args):
+    if not ORIGINAL.is_file():
+        sys.exit("Nothing to reset: no theme has been applied.")
+    snap = json.loads(ORIGINAL.read_text())
+    for sk, value in snap["gsettings"].items():
+        schema, key = sk.split(" ", 1)
+        gset(schema, key, value)
+    profile = ptyxis_profile()
+    if profile and "ptyxis" in snap:
+        gset(profile, "palette", snap["ptyxis"])
+        for old in (HOME / ".local/share/org.gnome.Ptyxis/palettes").glob("omarchy-*.palette"):
+            old.unlink()
+    if snap.get("vscode") is not None and vscode_settings().is_file():
+        text = vscode_settings().read_text()
+        for k, v in snap["vscode"].items():
+            text = jsonc_set(text, k, v)
+        vscode_settings().write_text(text)
+    conf = HOME / ".config/btop/btop.conf"
+    if snap.get("btop") is None:
+        conf.unlink(missing_ok=True)
+    else:
+        conf.write_text(snap["btop"])
+    chrome = {f"{d}/color.json": v for d, v in snap.get("chrome", {}).items()}
+    if any((Path(p).read_text() if Path(p).is_file() else None) != v for p, v in chrome.items()):
+        try:
+            write_root_files(chrome)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("  – chrome: needs admin rights; left as is")
+    CURRENT.unlink(missing_ok=True)
+    ORIGINAL.unlink()
+    print("Restored the settings from before the first theme was applied.")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="omarchy-theme", description=__doc__.splitlines()[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list", help="list themes (* = current)").set_defaults(fn=cmd_list)
+    s = sub.add_parser("set", help="apply a theme")
+    s.add_argument("theme")
+    s.add_argument("--skip", help=f"comma-separated targets to leave alone: {','.join(TARGETS)}")
+    s.add_argument("--wallpaper", type=int, default=1, help="which of the theme's backgrounds (1-based)")
+    s.set_defaults(fn=cmd_set)
+    sub.add_parser("current", help="print the current theme").set_defaults(fn=cmd_current)
+    c = sub.add_parser("colors", help="show a theme's resolved palette")
+    c.add_argument("theme", nargs="?")
+    c.set_defaults(fn=cmd_colors)
+    sub.add_parser("sync", help="update themes from Omarchy upstream").set_defaults(fn=cmd_sync)
+    sub.add_parser("reset", help="restore settings from before the first theme").set_defaults(fn=cmd_reset)
+    args = p.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()
