@@ -36,7 +36,9 @@ CURRENT = STATE / "current"
 WALLPAPER = STATE / "wallpaper"
 ORIGINAL = STATE / "original.json"
 
-TARGETS = ["gnome", "wallpaper", "ptyxis", "vscode", "btop", "chrome"]
+SETTINGS = CONFIG / "settings.json"
+
+TARGETS = ["gnome", "apps", "wallpaper", "ptyxis", "vscode", "btop", "chrome"]
 
 
 def log(ok, target, msg=""):
@@ -335,6 +337,90 @@ def apply_gnome(name, theme_dir, trusted, c):
     log(True, "gnome", msg)
 
 
+# ── GNOME app recolour (opt-in) ──────────────────────────────────────────────
+# libadwaita and adw-gtk3 read ~/.config/gtk-{4,3}.0/gtk.css at app start. We own a
+# separate file and add one @import line to gtk.css, so a user's own gtk.css survives.
+
+GTK_DIRS = {"gtk4.css.tpl": HOME / ".config/gtk-4.0", "gtk3.css.tpl": HOME / ".config/gtk-3.0"}
+GTK_FILE = "omarchy-theme.css"
+GTK_IMPORT = '@import url("omarchy-theme.css"); /* omarchy-themes-gnome */'
+
+
+def load_settings():
+    try:
+        return json.loads(SETTINGS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(settings):
+    SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS.write_text(json.dumps(settings, indent=2) + "\n")
+
+
+def luminance(hexcolor):
+    def chan(v):
+        v = int(hexcolor[v:v + 2], 16) / 255
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return 0.2126 * chan(1) + 0.7152 * chan(3) + 0.0722 * chan(5)
+
+
+def readable_on(hexcolor, dark_text):
+    """White or the theme's darkest shade, whichever reads better on hexcolor."""
+    def contrast(a, b):
+        hi, lo = sorted((luminance(a), luminance(b)), reverse=True)
+        return (hi + 0.05) / (lo + 0.05)
+    return max(("#ffffff", dark_text), key=lambda t: contrast(hexcolor, t))
+
+
+def gtk_colors(c):
+    bg, fg = c["background"], c["foreground"]
+    dark = c["mode"] != "light"
+    accent = c.get("accent", c["blue"])
+    ink = mix(c["darker_background"], "#000000", "40%") if dark else mix(fg, "#000000", "40%")
+    g = {"gtk_accent": accent, "gtk_accent_fg": readable_on(accent, ink)}
+    for k in ("red", "green", "yellow"):
+        g[f"gtk_{k}_fg"] = readable_on(c[k], ink)
+    if dark:
+        g.update(gtk_view=mix(bg, "#000000", "20%"), gtk_header=mix(bg, fg, "6%"),
+                 gtk_sidebar=mix(bg, fg, "6%"), gtk_raised=mix(bg, fg, "10%"))
+    else:
+        raised = mix(bg, "#ffffff", "50%")
+        g.update(gtk_view=raised, gtk_header=raised, gtk_sidebar=mix(bg, fg, "5%"), gtk_raised=raised)
+    return g
+
+
+def gtk_import(directory, present):
+    css = directory / "gtk.css"
+    text = css.read_text() if css.is_file() else ""
+    lines = [line for line in text.splitlines() if line.strip() != GTK_IMPORT]
+    if present:
+        lines.insert(0, GTK_IMPORT)
+    if any(line.strip() for line in lines):
+        directory.mkdir(parents=True, exist_ok=True)
+        css.write_text("\n".join(lines) + "\n")
+    elif css.is_file():
+        css.unlink()  # only our line was ever in it
+
+
+def remove_recolor():
+    for directory in GTK_DIRS.values():
+        gtk_import(directory, False)
+        (directory / GTK_FILE).unlink(missing_ok=True)
+
+
+def apply_apps(name, theme_dir, trusted, c):
+    if not load_settings().get("recolor_apps"):
+        remove_recolor()
+        return log(False, "apps", "recolour off (omarchy-theme recolor on)")
+    colors = {**c, **gtk_colors(c), "title": title(name)}
+    for tpl, directory in GTK_DIRS.items():
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / GTK_FILE).write_text(template(tpl, colors))
+        gtk_import(directory, True)
+    log(True, "apps", "GNOME apps recoloured (reopen open apps to see it)")
+
+
 def apply_wallpaper(name, theme_dir, trusted, c, index=1):
     bgs = sorted(p for p in (theme_dir / "backgrounds").glob("*")
                  if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
@@ -516,7 +602,7 @@ def apply_chrome(name, theme_dir, trusted, c):
     log(True, "chrome", f"toolbar {color}")
 
 
-APPLY = {"gnome": apply_gnome, "wallpaper": apply_wallpaper, "ptyxis": apply_ptyxis,
+APPLY = {"gnome": apply_gnome, "apps": apply_apps, "wallpaper": apply_wallpaper, "ptyxis": apply_ptyxis,
          "vscode": apply_vscode, "btop": apply_btop, "chrome": apply_chrome}
 
 
@@ -568,6 +654,19 @@ def cmd_next_wallpaper(args):
     WALLPAPER.write_text(f"{index}\n")
 
 
+def cmd_recolor(args):
+    settings = load_settings()
+    settings["recolor_apps"] = args.state == "on"
+    save_settings(settings)
+    themes = all_themes()
+    name = current()
+    if name in themes:
+        theme_dir, trusted = themes[name]
+        apply_apps(name, theme_dir, trusted, resolve(theme_dir))
+    elif args.state == "off":
+        remove_recolor()
+
+
 def cmd_current(args):
     print(current() or "none")
 
@@ -616,6 +715,7 @@ def cmd_reset(args):
             write_root_files(chrome)
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("  – chrome: needs admin rights; left as is")
+    remove_recolor()
     CURRENT.unlink(missing_ok=True)
     WALLPAPER.unlink(missing_ok=True)
     ORIGINAL.unlink()
@@ -637,6 +737,9 @@ def main():
     c = sub.add_parser("colors", help="show a theme's resolved palette")
     c.add_argument("theme", nargs="?")
     c.set_defaults(fn=cmd_colors)
+    r = sub.add_parser("recolor", help="recolour GNOME apps to the theme, not just the accent (opt-in)")
+    r.add_argument("state", choices=["on", "off"])
+    r.set_defaults(fn=cmd_recolor)
     sub.add_parser("sync", help="update themes from Omarchy upstream").set_defaults(fn=cmd_sync)
     sub.add_parser("reset", help="restore settings from before the first theme").set_defaults(fn=cmd_reset)
     args = p.parse_args()

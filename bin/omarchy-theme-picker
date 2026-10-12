@@ -153,6 +153,7 @@ class Window(Adw.ApplicationWindow):
 
     def _menu(self):
         menu = Gio.Menu()
+        menu.append("Recolour GNOME Apps", "win.recolor")
         menu.append("Also Theme Chrome (asks for password)", "win.chrome")
         menu.append("Update Themes from Omarchy", "win.sync")
         menu.append("Restore Original Settings…", "win.reset")
@@ -161,6 +162,10 @@ class Window(Adw.ApplicationWindow):
                                                GLib.Variant.new_boolean(self.prefs.get("chrome", False)))
         chrome.connect("change-state", self.on_chrome)
         self.add_action(chrome)
+        recolor = Gio.SimpleAction.new_stateful("recolor", None, GLib.Variant.new_boolean(
+            bool(ot.load_settings().get("recolor_apps"))))
+        recolor.connect("change-state", self.on_recolor)
+        self.add_action(recolor)
         sync = Gio.SimpleAction.new("sync", None)
         sync.connect("activate", lambda *_: self.run(["sync"], "Themes updated", self.populate))
         self.add_action(sync)
@@ -194,6 +199,12 @@ class Window(Adw.ApplicationWindow):
         action.set_state(value)
         self.prefs["chrome"] = value.get_boolean()
         save_prefs(self.prefs)
+
+    def on_recolor(self, action, value):
+        on = value.get_boolean()
+        self.run(["recolor", "on" if on else "off"],
+                 "GNOME apps follow the theme — reopen apps to see it" if on else "GNOME apps back to default colours",
+                 lambda: action.set_state(value))
 
     def on_activated(self, flow, card):
         args = ["set", card.name]

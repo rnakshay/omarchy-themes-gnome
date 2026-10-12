@@ -8,6 +8,7 @@ Pick a theme and it is applied to:
 | | |
 |---|---|
 | GNOME | dark/light mode, nearest accent colour, the theme's icon set (if installed) |
+| GNOME apps | *opt-in* (`omarchy-theme recolor on`): window, sidebar, header and exact accent colours |
 | Wallpaper | the theme's own backgrounds, cycled with `next-wallpaper` |
 | Ptyxis | a generated terminal palette |
 | VS Code | the theme's named VS Code theme, or one generated from its colours |
@@ -37,8 +38,12 @@ omarchy-theme reset                  # restore everything from before the first 
 
 ## Design: stay small, survive updates
 
-- **Only supported interfaces**: gsettings, Ptyxis palette files, VS Code settings, btop
-  themes, Chrome enterprise policy. No GNOME Shell themes, no libadwaita CSS overrides.
+- **Supported interfaces by default**: gsettings, Ptyxis palette files, VS Code settings, btop
+  themes, Chrome enterprise policy. No GNOME Shell themes.
+- **The one unsupported piece is opt-in.** App recolour uses libadwaita's documented CSS
+  variables via `gtk.css`, which GNOME doesn't promise to keep honouring.
+  `tests/check-gtk-recolor.py` renders a real libadwaita window and checks the pixels, so a
+  GNOME update that breaks it shows up as a failing test. `recolor off` removes it entirely.
 - **Themes are not copied.** They are read from a sparse clone of Omarchy, and Omarchy's own
   templates are reused, so upstream fixes arrive with `sync`.
 - `tests/check-upstream.py` checks the colour resolver still matches Omarchy's
