@@ -7,7 +7,8 @@ Pick a theme and it is applied to:
 
 | | |
 |---|---|
-| GNOME | dark/light mode, nearest accent colour, the theme's icon set (if installed) |
+| GNOME | dark/light mode, nearest accent colour |
+| Folder icons | Adwaita recoloured to the accent ([Adwaita-colors](https://github.com/dpejoh/Adwaita-colors)), also when the accent is changed by hand; Omarchy's Yaru pick if only that is installed |
 | GNOME apps | *opt-in* (`omarchy-theme recolor on`): window, sidebar, header and exact accent colours |
 | Wallpaper | the theme's own backgrounds, cycled with `next-wallpaper` |
 | Ptyxis | a generated terminal palette |
@@ -18,7 +19,14 @@ Pick a theme and it is applied to:
 ## Install
 
 ```bash
-./install.sh            # omarchy-theme on PATH, "Themes" in Activities
+./install.sh            # omarchy-theme on PATH, "Themes" in Activities, accent-coloured folders
+./install.sh --uninstall
+```
+
+Re-run `./install.sh` after a GNOME update, so the coloured folder icons are rebuilt from the
+new Adwaita.
+
+```bash
 ```
 
 Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` (libwebp-tools).

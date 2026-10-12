@@ -328,13 +328,27 @@ def apply_gnome(name, theme_dir, trusted, c):
     gset("org.gnome.desktop.interface", "accent-color", accent)
     msg = f"{'dark' if dark else 'light'}, accent {accent}"
 
-    icons = (theme_dir / "icons.theme").read_text().strip() if (theme_dir / "icons.theme").is_file() else ""
-    if icons and icon_theme_installed(icons):
+    icons = icons_for(accent, theme_dir)
+    if icons:
         gset("org.gnome.desktop.interface", "icon-theme", icons)
         msg += f", icons {icons}"
-    elif icons:
-        msg += f" (icons {icons} not installed: sudo dnf install yaru-icon-theme)"
     log(True, "gnome", msg)
+
+
+def managed_icons(name):
+    """Icon themes we may replace. Anything else (Papirus, …) was the user's choice and stays."""
+    return name == "Adwaita" or name.startswith(("Adwaita-", "Yaru"))
+
+
+def icons_for(accent, theme_dir=None):
+    """Adwaita recoloured to the accent (Adwaita-colors) keeps GNOME's look; Omarchy's Yaru pick is
+    the fallback. None when the user has their own icon theme or neither is installed."""
+    if not managed_icons(gget("org.gnome.desktop.interface", "icon-theme").strip("'")):
+        return None
+    if icon_theme_installed(f"Adwaita-{accent}"):
+        return f"Adwaita-{accent}"
+    yaru = theme_dir and (theme_dir / "icons.theme").is_file() and (theme_dir / "icons.theme").read_text().strip()
+    return yaru if yaru and icon_theme_installed(yaru) else None
 
 
 # ── GNOME app recolour (opt-in) ──────────────────────────────────────────────
@@ -667,6 +681,20 @@ def cmd_recolor(args):
         remove_recolor()
 
 
+def cmd_follow_accent(args):
+    """Long-running: keep coloured folders in step with the accent, including manual changes in Settings."""
+    def sync(accent):
+        icons = icons_for(accent.strip("'"))
+        if icons and icons != gget("org.gnome.desktop.interface", "icon-theme").strip("'"):
+            gset("org.gnome.desktop.interface", "icon-theme", icons)
+
+    sync(gget("org.gnome.desktop.interface", "accent-color"))
+    monitor = subprocess.Popen(["gsettings", "monitor", "org.gnome.desktop.interface", "accent-color"],
+                               stdout=subprocess.PIPE, text=True)
+    for line in monitor.stdout:  # "accent-color: 'green'"
+        sync(line.split(":", 1)[1].strip())
+
+
 def cmd_current(args):
     print(current() or "none")
 
@@ -732,6 +760,8 @@ def main():
     s.add_argument("--wallpaper", type=int, default=1, help="which of the theme's backgrounds (1-based)")
     s.set_defaults(fn=cmd_set)
     sub.add_parser("current", help="print the current theme").set_defaults(fn=cmd_current)
+    sub.add_parser("follow-accent", help="(service) recolour folder icons whenever the accent changes"
+                   ).set_defaults(fn=cmd_follow_accent)
     sub.add_parser("next-wallpaper", help="cycle to the current theme's next background").set_defaults(
         fn=cmd_next_wallpaper)
     c = sub.add_parser("colors", help="show a theme's resolved palette")
