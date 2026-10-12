@@ -32,12 +32,15 @@ Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` 
 
 Open **Themes** from Activities and click one to preview it full screen: Omarchy's screenshot,
 then each wallpaper (←/→ or swipe), and ↑/↓ moves to the previous/next theme. **Apply** (or Enter)
-uses the theme and wallpaper on screen; Esc closes. Or:
+uses the theme and wallpaper on screen; **Wallpaper Only** (or W) takes just the picture and keeps
+the current colours; Esc closes. *Keep Wallpaper When Switching Themes* in the menu leaves your
+wallpaper (including your own, set in GNOME Settings) alone. Or:
 
 ```bash
 omarchy-theme list
 omarchy-theme set osaka-jade [--skip chrome,vscode] [--wallpaper 2]
 omarchy-theme next-wallpaper
+omarchy-theme wallpaper tokyo-night 2   # another theme's wallpaper, current colours kept
 omarchy-theme colors tokyo-night     # preview the palette in the terminal
 omarchy-theme sync                   # pull new and updated themes from Omarchy
 omarchy-theme reset                  # restore everything from before the first theme

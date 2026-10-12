@@ -109,10 +109,13 @@ class Preview(Adw.Window):
         header = Adw.HeaderBar()
         self.heading = Adw.WindowTitle()
         header.set_title_widget(self.heading)
-        apply = Gtk.Button(label="Apply")
+        apply = Gtk.Button(label="Apply Theme", tooltip_text="Enter")
         apply.add_css_class("suggested-action")
         apply.connect("clicked", lambda *_: self.apply())
         header.pack_end(apply)
+        self.wall_only = Gtk.Button(label="Wallpaper Only", tooltip_text="W — keep the current colours")
+        self.wall_only.connect("clicked", lambda *_: self.apply_wallpaper())
+        header.pack_end(self.wall_only)
         view.add_top_bar(header)
 
         self.view = view
@@ -185,6 +188,7 @@ class Preview(Adw.Window):
         current = " · current" if self.name == ot.current() else ""
         self.heading.set_title(f"{ot.title(self.name)}{current}")
         where = self.pages[self.target][0] if self.pages else "No images"
+        self.wall_only.set_sensitive(self.shown_wallpaper() is not None)
         self.heading.set_subtitle(f"{where} — theme {self.index + 1} of {len(self.themes)}")
 
     def step(self, delta):
@@ -224,15 +228,27 @@ class Preview(Adw.Window):
             self.show_theme(self.index - 1)
         elif keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self.apply()
+        elif keyval in (Gdk.KEY_w, Gdk.KEY_W):
+            self.apply_wallpaper()
         else:
             return False
         return True
 
-    def apply(self):
+    def shown_wallpaper(self):
+        """1-based index of the wallpaper on screen, or None on the screenshot page."""
         path = self.pages[self.target][1] if self.pages else None
-        index = self.walls.index(path) + 1 if path in self.walls else 1
+        return self.walls.index(path) + 1 if path in self.walls else None
+
+    def apply(self):
+        index = self.shown_wallpaper() or 1
         self.close()
         self.parent_window.apply(self.name, index)
+
+    def apply_wallpaper(self):
+        index = self.shown_wallpaper()
+        if index is not None:
+            self.close()
+            self.parent_window.apply_wallpaper(self.name, index)
 
 
 class Card(Gtk.FlowBoxChild):
@@ -322,14 +338,19 @@ class Window(Adw.ApplicationWindow):
     def _menu(self):
         menu = Gio.Menu()
         menu.append("Recolour GNOME Apps", "win.recolor")
+        menu.append("Keep Wallpaper When Switching Themes", "win.keep-wallpaper")
         menu.append("Also Theme Chrome (asks for password)", "win.chrome")
         menu.append("Update Themes from Omarchy", "win.sync")
         menu.append("Restore Original Settings…", "win.reset")
 
         chrome = Gio.SimpleAction.new_stateful("chrome", None,
                                                GLib.Variant.new_boolean(self.prefs.get("chrome", False)))
-        chrome.connect("change-state", self.on_chrome)
+        chrome.connect("change-state", self.on_pref, "chrome")
         self.add_action(chrome)
+        keep = Gio.SimpleAction.new_stateful("keep-wallpaper", None,
+                                             GLib.Variant.new_boolean(self.prefs.get("keep_wallpaper", False)))
+        keep.connect("change-state", self.on_pref, "keep_wallpaper")
+        self.add_action(keep)
         recolor = Gio.SimpleAction.new_stateful("recolor", None, GLib.Variant.new_boolean(
             bool(ot.load_settings().get("recolor_apps"))))
         recolor.connect("change-state", self.on_recolor)
@@ -363,9 +384,9 @@ class Window(Adw.ApplicationWindow):
             if path:
                 GLib.idle_add(card.picture.set_filename, str(path))
 
-    def on_chrome(self, action, value):
+    def on_pref(self, action, value, key):
         action.set_state(value)
-        self.prefs["chrome"] = value.get_boolean()
+        self.prefs[key] = value.get_boolean()
         save_prefs(self.prefs)
 
     def on_recolor(self, action, value):
@@ -380,13 +401,21 @@ class Window(Adw.ApplicationWindow):
 
     def apply(self, name, wallpaper=1):
         args = ["set", name, "--wallpaper", str(wallpaper)]
+        skip = []
         if not self.prefs.get("chrome", False):
-            args += ["--skip", "chrome"]
+            skip.append("chrome")
+        if self.prefs.get("keep_wallpaper", False):
+            skip.append("wallpaper")
+        if skip:
+            args += ["--skip", ",".join(skip)]
 
         def done():
             for n, c in self.cards.items():
                 c.set_current(n == name)
         self.run(args, f"{ot.title(name)} applied", done)
+
+    def apply_wallpaper(self, name, index):
+        self.run(["wallpaper", name, str(index)], f"Wallpaper from {ot.title(name)}")
 
     def on_reset(self, *_):
         dialog = Adw.AlertDialog(heading="Restore original settings?",

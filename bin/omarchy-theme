@@ -657,6 +657,17 @@ def cmd_set(args):
     WALLPAPER.write_text(f"{args.wallpaper}\n")
 
 
+def cmd_wallpaper(args):
+    """Any theme's wallpaper, leaving the current theme's colours alone."""
+    themes = all_themes()
+    name = slug(args.theme)
+    if name not in themes:
+        sys.exit(f"No theme '{args.theme}'. See: omarchy-theme list")
+    snapshot()
+    theme_dir, trusted = themes[name]
+    apply_wallpaper(name, theme_dir, trusted, None, args.index)
+
+
 def cmd_next_wallpaper(args):
     name = current()
     themes = all_themes()
@@ -762,6 +773,10 @@ def main():
     sub.add_parser("current", help="print the current theme").set_defaults(fn=cmd_current)
     sub.add_parser("follow-accent", help="(service) recolour folder icons whenever the accent changes"
                    ).set_defaults(fn=cmd_follow_accent)
+    w = sub.add_parser("wallpaper", help="use another theme's wallpaper, keeping the current colours")
+    w.add_argument("theme")
+    w.add_argument("index", nargs="?", type=int, default=1, help="which of its backgrounds (1-based)")
+    w.set_defaults(fn=cmd_wallpaper)
     sub.add_parser("next-wallpaper", help="cycle to the current theme's next background").set_defaults(
         fn=cmd_next_wallpaper)
     c = sub.add_parser("colors", help="show a theme's resolved palette")
