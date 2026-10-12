@@ -96,20 +96,18 @@ def load_texture(path):
 
 
 class Preview(Adw.Window):
-    """Full-screen look at a theme: Omarchy's screenshot, then each wallpaper. Apply uses the one shown."""
+    """Full-screen look at the themes. ←/→ move through a theme's screenshot and wallpapers,
+    ↑/↓ move between themes. Apply uses the theme and wallpaper on screen."""
 
-    def __init__(self, parent, name, theme_dir):
-        super().__init__(transient_for=parent, modal=True, title=ot.title(name))
+    def __init__(self, parent, themes, index):
+        super().__init__(transient_for=parent, modal=True, title="Preview")
         self.parent_window = parent
-        self.name = name
-        shot = theme_dir / "preview.png"
-        self.walls = wallpapers(theme_dir)
-        self.pages = ([("Screenshot from Omarchy (GNOME keeps its own layout)", shot)] if shot.is_file() else []) + \
-            [(f"Wallpaper {i} of {len(self.walls)}", p) for i, p in enumerate(self.walls, 1)]
+        self.themes = themes  # [(name, theme_dir)] in the grid's order
+        self.generation = 0
 
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
-        self.heading = Adw.WindowTitle(title=ot.title(name))
+        self.heading = Adw.WindowTitle()
         header.set_title_widget(self.heading)
         apply = Gtk.Button(label="Apply")
         apply.add_css_class("suggested-action")
@@ -117,54 +115,101 @@ class Preview(Adw.Window):
         header.pack_end(apply)
         view.add_top_bar(header)
 
-        self.carousel = Adw.Carousel(hexpand=True, vexpand=True, allow_scroll_wheel=True)
-        self.carousel.add_css_class("preview-stage")
-        self.pictures = []
-        for _, path in self.pages:
-            picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, hexpand=True, vexpand=True)
-            self.carousel.append(picture)
-            self.pictures.append(picture)
-        self.carousel.connect("page-changed", lambda *_: (self.update_title(), self.load_around()))
-        view.set_content(self.carousel)
-
-        dots = Adw.CarouselIndicatorDots(carousel=self.carousel, margin_top=6, margin_bottom=6)
-        view.add_bottom_bar(dots)
+        self.view = view
+        self.dots = Adw.CarouselIndicatorDots(margin_top=6, margin_bottom=6)
+        view.add_bottom_bar(self.dots)
         self.set_content(view)
 
-        keys = Gtk.EventControllerKey()
+        # Capture phase, so the carousel never gets to treat the arrows as its own.
+        keys = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
         keys.connect("key-pressed", self.on_key)
         self.add_controller(keys)
 
+        self.show_theme(index)
+        self.fullscreen()
+
+    def show_theme(self, index):
+        self.index = index % len(self.themes)
+        self.name, theme_dir = self.themes[self.index]
+        self.generation += 1  # images still loading for the previous theme are dropped
+        shot = theme_dir / "preview.png"
+        self.walls = wallpapers(theme_dir)
+        self.pages = ([("Screenshot from Omarchy (GNOME keeps its own layout)", shot)] if shot.is_file() else []) + \
+            [(f"Wallpaper {i} of {len(self.walls)}", p) for i, p in enumerate(self.walls, 1)]
+
+        # A fresh carousel per theme: emptying the old one animates its pages out and
+        # leaves its position behind, so the next theme would open mid-slide.
+        self.carousel = Adw.Carousel(hexpand=True, vexpand=True, allow_scroll_wheel=True)
+        self.carousel.add_css_class("preview-stage")
+        self.carousel.connect("page-changed", self.on_page_changed)
+        self.pictures = []
+        for _ in self.pages:
+            picture = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN, hexpand=True, vexpand=True)
+            self.carousel.append(picture)
+            self.pictures.append(picture)
+        self.view.set_content(self.carousel)
+        self.dots.set_carousel(self.carousel)
+        self.target = 0  # the page we are on or sliding to; the carousel's position lags behind
+        self.sliding = False  # a key-driven slide is under way; ignore the carousel's interim reports
         self.requested = set()
         self.update_title()
-        self.fullscreen()
-        self.load_around()
+        self.load_around(0)
 
     def load_around(self, center=None):
         """Only the shown image and its neighbours: some wallpapers are 8K, and this is an 8 GB laptop."""
-        center = self.page() if center is None else center
+        center = self.target if center is None else center
         for i in (center, center + 1, center - 1):
             if 0 <= i < len(self.pages) and i not in self.requested:
                 self.requested.add(i)
-                threading.Thread(target=self._load, args=(i,), daemon=True).start()
+                threading.Thread(target=self._load, args=(self.generation, self.pictures[i], self.pages[i][1]),
+                                 daemon=True).start()
 
-    def _load(self, i):
-        texture = load_texture(self.pages[i][1])
-        if texture is not None:
-            GLib.idle_add(self.pictures[i].set_paintable, texture)
+    def _load(self, generation, picture, path):
+        texture = load_texture(path)
+        if texture is not None and generation == self.generation:
+            GLib.idle_add(picture.set_paintable, texture)
 
-    def page(self):
-        return round(self.carousel.get_position())
+    def on_page_changed(self, carousel, index):
+        if carousel is not self.carousel:
+            return
+        if self.sliding:
+            # A carousel that is laid out after a key press reports page 0 first; only the
+            # slide's own arrival counts.
+            self.sliding = index != self.target
+            return
+        self.target = index  # a swipe or scroll-wheel move
+        self.update_title()
+        self.load_around()
 
     def update_title(self):
-        if self.pages:
-            self.heading.set_subtitle(self.pages[self.page()][0])
+        current = " · current" if self.name == ot.current() else ""
+        self.heading.set_title(f"{ot.title(self.name)}{current}")
+        where = self.pages[self.target][0] if self.pages else "No images"
+        self.heading.set_subtitle(f"{where} — theme {self.index + 1} of {len(self.themes)}")
 
     def step(self, delta):
-        target = min(max(self.page() + delta, 0), len(self.pictures) - 1)
-        if self.pictures:
-            self.load_around(target)
-            self.carousel.scroll_to(self.pictures[target], True)
+        if not self.pictures:
+            return
+        target = min(max(self.target + delta, 0), len(self.pictures) - 1)
+        if target == self.target:
+            return
+        self.target = target
+        self.update_title()
+        self.load_around()
+        mapped = self.carousel.get_mapped()
+        self.sliding = mapped  # unmapped, the jump is immediate and reports nothing to wait for
+        self.carousel.scroll_to(self.pictures[target], mapped)
+        if mapped:
+            GLib.timeout_add(1000, self._settle, self.carousel)
+
+    def _settle(self, carousel):
+        """If a slide was interrupted (a swipe mid-way), trust where the carousel actually stopped."""
+        if carousel is self.carousel and self.sliding:
+            self.sliding = False
+            self.target = min(round(carousel.get_position()), len(self.pictures) - 1)
+            self.update_title()
+            self.load_around()
+        return False
 
     def on_key(self, controller, keyval, keycode, state):
         if keyval == Gdk.KEY_Escape:
@@ -173,6 +218,10 @@ class Preview(Adw.Window):
             self.step(1)
         elif keyval == Gdk.KEY_Left:
             self.step(-1)
+        elif keyval == Gdk.KEY_Down:
+            self.show_theme(self.index + 1)
+        elif keyval == Gdk.KEY_Up:
+            self.show_theme(self.index - 1)
         elif keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self.apply()
         else:
@@ -180,7 +229,7 @@ class Preview(Adw.Window):
         return True
 
     def apply(self):
-        path = self.pages[self.page()][1] if self.pages else None
+        path = self.pages[self.target][1] if self.pages else None
         index = self.walls.index(path) + 1 if path in self.walls else 1
         self.close()
         self.parent_window.apply(self.name, index)
@@ -326,7 +375,8 @@ class Window(Adw.ApplicationWindow):
                  lambda: action.set_state(value))
 
     def on_activated(self, flow, card):
-        Preview(self, card.name, card.theme_dir).present()
+        themes = [(c.name, c.theme_dir) for c in self.cards.values()]
+        Preview(self, themes, list(self.cards).index(card.name)).present()
 
     def apply(self, name, wallpaper=1):
         args = ["set", name, "--wallpaper", str(wallpaper)]

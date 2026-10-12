@@ -26,7 +26,8 @@ Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` 
 ## Use
 
 Open **Themes** from Activities and click one to preview it full screen: Omarchy's screenshot,
-then each wallpaper (←/→ or swipe). **Apply** (or Enter) uses the wallpaper on screen. Or:
+then each wallpaper (←/→ or swipe), and ↑/↓ moves to the previous/next theme. **Apply** (or Enter)
+uses the theme and wallpaper on screen; Esc closes. Or:
 
 ```bash
 omarchy-theme list
