@@ -343,7 +343,7 @@ def managed_icons(name):
 def icons_for(accent, theme_dir=None):
     """Adwaita recoloured to the accent (Adwaita-colors) keeps GNOME's look; Omarchy's Yaru pick is
     the fallback. None when the user has their own icon theme or neither is installed."""
-    if not managed_icons(gget("org.gnome.desktop.interface", "icon-theme").strip("'")):
+    if not enabled("folders") or not managed_icons(gget("org.gnome.desktop.interface", "icon-theme").strip("'")):
         return None
     if icon_theme_installed(f"Adwaita-{accent}"):
         return f"Adwaita-{accent}"
@@ -370,6 +370,84 @@ def load_settings():
 def save_settings(settings):
     SETTINGS.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS.write_text(json.dumps(settings, indent=2) + "\n")
+
+
+# ── Options: what a theme switch touches beyond GNOME's mode, accent and wallpaper ──
+# Shared by the CLI and the app (its ☰ menu), so both always agree.
+
+OPTIONS = {"apps": "GNOME app colours", "folders": "coloured folders", "ptyxis": "terminal (Ptyxis)",
+           "vscode": "VS Code", "btop": "btop", "chrome": "Chrome toolbar"}
+OPTION_APPS = {"ptyxis": "ptyxis", "vscode": "code", "btop": "btop"}
+FOLLOW_UNIT = "omarchy-theme-follow-accent.service"
+UNIT_DIR = HOME / ".config/systemd/user"
+ICONS_SRC = DATA / "adwaita-colors"
+
+
+def unit_enabled():
+    return run("systemctl", "--user", "is-enabled", FOLLOW_UNIT, check=False).stdout.strip() == "enabled"
+
+
+def enabled(option):
+    s = load_settings()
+    if option == "apps":
+        return bool(s.get("recolor_apps"))
+    if option == "folders":
+        return s.get("folders", unit_enabled())  # installs from before this option existed had it on
+    off = s.get("off")
+    if off is None:  # Chrome asks for a password on every switch, so it starts off
+        try:
+            chrome = json.loads((CONFIG / "picker.json").read_text()).get("chrome", False)
+        except (OSError, ValueError):
+            chrome = False
+        off = [] if chrome else ["chrome"]
+    return option not in off
+
+
+def available(option):
+    """Options for apps that aren't installed are hidden in the app."""
+    if option in OPTION_APPS:
+        return shutil.which(OPTION_APPS[option]) is not None
+    if option == "chrome":
+        return bool(chrome_policy_dirs()) or any(shutil.which(b) for b in ("google-chrome-stable", "chromium-browser"))
+    return True
+
+
+def set_folders(on):
+    """Coloured folders: Adwaita-colors (github.com/dpejoh/Adwaita-colors, GPL-3.0) builds an
+    Adwaita-<accent> icon theme per GNOME accent from the installed Adwaita, user-level; a small
+    user service keeps the icon theme on the accent, including manual changes in Settings."""
+    unit = UNIT_DIR / FOLLOW_UNIT
+    if on:
+        if (ICONS_SRC / ".git").is_dir():
+            run("git", "-C", str(ICONS_SRC), "pull", "--quiet", "--ff-only", check=False)
+        else:
+            run("git", "clone", "--quiet", "--depth", "1", "https://github.com/dpejoh/Adwaita-colors", str(ICONS_SRC))
+        run(str(ICONS_SRC / "setup"), "-i")  # (re)builds from the current Adwaita, so also right after GNOME updates
+        exe = shutil.which("omarchy-theme") or str(Path(__file__).resolve())
+        UNIT_DIR.mkdir(parents=True, exist_ok=True)
+        unit.write_text(f"""[Unit]
+Description=Recolour folder icons to follow the GNOME accent colour
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart={exe} follow-accent
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target
+""")
+        run("systemctl", "--user", "daemon-reload")
+        run("systemctl", "--user", "enable", "--now", FOLLOW_UNIT)
+        run("systemctl", "--user", "restart", FOLLOW_UNIT)
+    else:
+        run("systemctl", "--user", "disable", "--now", FOLLOW_UNIT, check=False)
+        unit.unlink(missing_ok=True)
+        run("systemctl", "--user", "daemon-reload", check=False)
+        if gget("org.gnome.desktop.interface", "icon-theme").strip("'").startswith("Adwaita-"):
+            gset("org.gnome.desktop.interface", "icon-theme", "Adwaita")
+        if (ICONS_SRC / "setup").is_file():
+            run(str(ICONS_SRC / "setup"), "-u", stdin=subprocess.DEVNULL, check=False)  # no tty: no prompt
 
 
 def luminance(hexcolor):
@@ -646,6 +724,9 @@ def cmd_set(args):
         if target in skip:
             log(False, target, "skipped")
             continue
+        if target in ("ptyxis", "vscode", "btop", "chrome") and not enabled(target):
+            log(False, target, f"off (omarchy-theme enable {target})")
+            continue
         try:
             if target == "wallpaper":
                 apply_wallpaper(name, theme_dir, trusted, colors, args.wallpaper)
@@ -679,17 +760,50 @@ def cmd_next_wallpaper(args):
     WALLPAPER.write_text(f"{index}\n")
 
 
-def cmd_recolor(args):
+def set_option(option, on):
     settings = load_settings()
-    settings["recolor_apps"] = args.state == "on"
+    if option == "apps":
+        settings["recolor_apps"] = on
+    elif option == "folders":
+        set_folders(on)
+        settings["folders"] = on
+    else:
+        off = [o for o in OPTIONS if o not in ("apps", "folders") and not enabled(o)]
+        settings["off"] = sorted(set(off) - {option}) if on else sorted(set(off) | {option})
     save_settings(settings)
+
     themes = all_themes()
     name = current()
-    if name in themes:
-        theme_dir, trusted = themes[name]
-        apply_apps(name, theme_dir, trusted, resolve(theme_dir))
-    elif args.state == "off":
-        remove_recolor()
+    if option == "apps":
+        if name in themes:
+            theme_dir, trusted = themes[name]
+            apply_apps(name, theme_dir, trusted, resolve(theme_dir))
+        elif not on:
+            remove_recolor()
+    elif option == "folders" and on:
+        icons = icons_for(gget("org.gnome.desktop.interface", "accent-color").strip("'"))
+        if icons:
+            gset("org.gnome.desktop.interface", "icon-theme", icons)
+    print(f"{OPTIONS[option]}: {'on' if on else 'off'}"
+          + ("" if option in ("apps", "folders") or not on else " (from the next theme switch)"))
+
+
+def cmd_enable(args):
+    set_option(args.option, True)
+
+
+def cmd_disable(args):
+    set_option(args.option, False)
+
+
+def cmd_options(args):
+    for option, label in OPTIONS.items():
+        if available(option):
+            print(f"{'✓' if enabled(option) else ' '} {option:8} {label}")
+
+
+def cmd_recolor(args):  # kept for scripts written against the first version
+    set_option("apps", args.state == "on")
 
 
 def cmd_follow_accent(args):
@@ -787,6 +901,11 @@ def main():
     r = sub.add_parser("recolor", help="recolour GNOME apps to the theme, not just the accent (opt-in)")
     r.add_argument("state", choices=["on", "off"])
     r.set_defaults(fn=cmd_recolor)
+    for verb, fn in (("enable", cmd_enable), ("disable", cmd_disable)):
+        e = sub.add_parser(verb, help=f"{verb} an option: {', '.join(OPTIONS)}")
+        e.add_argument("option", choices=list(OPTIONS))
+        e.set_defaults(fn=fn)
+    sub.add_parser("options", help="show which options are on").set_defaults(fn=cmd_options)
     sub.add_parser("sync", help="update themes from Omarchy upstream").set_defaults(fn=cmd_sync)
     sub.add_parser("reset", help="restore settings from before the first theme").set_defaults(fn=cmd_reset)
     args = p.parse_args()

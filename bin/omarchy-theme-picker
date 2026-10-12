@@ -3,7 +3,6 @@
 
 import importlib.machinery
 import importlib.util
-import json
 import sys
 import threading
 from pathlib import Path
@@ -32,7 +31,14 @@ ot = importlib.util.module_from_spec(_spec)
 _loader.exec_module(ot)
 
 THUMBS = ot.DATA / "thumbnails"
-PREFS = ot.CONFIG / "picker.json"
+MENU_OPTIONS = {
+    "apps": "GNOME App Colours",
+    "folders": "Coloured Folders",
+    "ptyxis": "Terminal (Ptyxis)",
+    "vscode": "VS Code",
+    "btop": "btop",
+    "chrome": "Chrome (asks for password)",
+}
 THUMB_W, THUMB_H = 320, 180
 SWATCHES = ["background", "foreground", "accent", "red", "green", "yellow", "blue", "magenta"]
 
@@ -44,18 +50,6 @@ CSS = """
           box-shadow: inset 0 0 0 1px alpha(currentColor, 0.18); }
 .preview-stage { background: black; }
 """
-
-
-def load_prefs():
-    try:
-        return json.loads(PREFS.read_text())
-    except (OSError, ValueError):
-        return {}
-
-
-def save_prefs(prefs):
-    PREFS.parent.mkdir(parents=True, exist_ok=True)
-    PREFS.write_text(json.dumps(prefs, indent=2) + "\n")
 
 
 def thumbnail(name, theme_dir):
@@ -318,7 +312,6 @@ class Card(Gtk.FlowBoxChild):
 class Window(Adw.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title="Omarchy Themes", default_width=1080, default_height=720)
-        self.prefs = load_prefs()
         self.busy = False
 
         view = Adw.ToolbarView()
@@ -343,20 +336,24 @@ class Window(Adw.ApplicationWindow):
         self.populate()
 
     def _menu(self):
+        # What a theme switch touches besides GNOME's mode, accent and wallpaper. The settings live
+        # with omarchy-theme, so the command line sees the same choices.
+        options = Gio.Menu()
+        for option, label in MENU_OPTIONS.items():
+            if not ot.available(option):
+                continue  # an app that isn't installed
+            options.append(label, f"win.opt-{option}")
+            action = Gio.SimpleAction.new_stateful(f"opt-{option}", None,
+                                                   GLib.Variant.new_boolean(ot.enabled(option)))
+            action.connect("change-state", self.on_option, option)
+            self.add_action(action)
+        actions = Gio.Menu()
+        actions.append("Update Themes from Omarchy", "win.sync")
+        actions.append("Restore Original Settings…", "win.reset")
         menu = Gio.Menu()
-        menu.append("Recolour GNOME Apps", "win.recolor")
-        menu.append("Also Theme Chrome (asks for password)", "win.chrome")
-        menu.append("Update Themes from Omarchy", "win.sync")
-        menu.append("Restore Original Settings…", "win.reset")
+        menu.append_section("Theme Also Changes", options)
+        menu.append_section(None, actions)
 
-        chrome = Gio.SimpleAction.new_stateful("chrome", None,
-                                               GLib.Variant.new_boolean(self.prefs.get("chrome", False)))
-        chrome.connect("change-state", self.on_pref, "chrome")
-        self.add_action(chrome)
-        recolor = Gio.SimpleAction.new_stateful("recolor", None, GLib.Variant.new_boolean(
-            bool(ot.load_settings().get("recolor_apps"))))
-        recolor.connect("change-state", self.on_recolor)
-        self.add_action(recolor)
         sync = Gio.SimpleAction.new("sync", None)
         sync.connect("activate", lambda *_: self.run(["sync"], "Themes updated", self.populate))
         self.add_action(sync)
@@ -386,16 +383,16 @@ class Window(Adw.ApplicationWindow):
             if path:
                 GLib.idle_add(card.picture.set_filename, str(path))
 
-    def on_pref(self, action, value, key):
-        action.set_state(value)
-        self.prefs[key] = value.get_boolean()
-        save_prefs(self.prefs)
-
-    def on_recolor(self, action, value):
+    def on_option(self, action, value, option):
         on = value.get_boolean()
-        self.run(["recolor", "on" if on else "off"],
-                 "GNOME apps follow the theme — reopen apps to see it" if on else "GNOME apps back to default colours",
-                 lambda: action.set_state(value))
+        label = MENU_OPTIONS[option].split(" (")[0]
+        if option == "apps":
+            message = "GNOME apps follow the theme — reopen apps to see it" if on else "GNOME apps back to default colours"
+        elif option == "folders":
+            message = "Folders follow the accent colour" if on else "Folders back to blue"
+        else:
+            message = f"{label} {'follows' if on else 'no longer follows'} the theme from the next switch"
+        self.run(["enable" if on else "disable", option], message, lambda: action.set_state(value))
 
     def on_activated(self, flow, card):
         themes = [(c.name, c.theme_dir) for c in self.cards.values()]
@@ -405,11 +402,8 @@ class Window(Adw.ApplicationWindow):
         if mode == "wallpaper":
             return self.run(["wallpaper", name, str(wallpaper)], f"Wallpaper from {ot.title(name)}")
         args = ["set", name, "--wallpaper", str(wallpaper)]
-        skip = [] if self.prefs.get("chrome", False) else ["chrome"]
         if mode == "theme":
-            skip.append("wallpaper")
-        if skip:
-            args += ["--skip", ",".join(skip)]
+            args += ["--skip", "wallpaper"]
 
         def done():
             for n, c in self.cards.items():

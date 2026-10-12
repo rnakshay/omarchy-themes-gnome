@@ -13,7 +13,7 @@ Windows, top bar and layout stay GNOME's — it changes colours and wallpaper, n
 
 ## The app
 
-![The Omarchy Themes app: theme cards with preview images and colour swatches, and the ☰ menu open](docs/screenshots/app-grid.png)
+![The Omarchy Themes app: theme cards with preview images and colour swatches, and the ☰ menu of options open](docs/screenshots/app-grid.png)
 
 Open **Omarchy Themes** from Activities. Every Omarchy theme is shown as a card with its preview
 and colour palette; the current one has a check mark.
@@ -35,38 +35,45 @@ of its wallpapers:
 The same three choices are on the **Apply ▾** button. Mixing is easy: find a wallpaper you like
 in any theme and press W, then find the colours you want and press T.
 
-The **☰ menu** has:
+The **☰ menu** chooses what a theme switch changes, besides GNOME's dark/light mode, accent and
+wallpaper. Apps that aren't installed aren't listed.
 
-- **Recolour GNOME Apps** — windows, sidebars and headers in the theme's colours, not just the
-  accent (opt-in; see *Design*). Apps pick it up when reopened.
-- **Also Theme Chrome** — sets Chrome's toolbar colour too; asks for an admin password each time.
-- **Update Themes from Omarchy** — fetch new and updated themes.
-- **Restore Original Settings…** — put everything back as it was before the first theme.
+| Option | Default | |
+|---|---|---|
+| GNOME App Colours | off | windows, sidebars and headers in the theme's colours, not just the accent (see *Design*); apps pick it up when reopened |
+| Coloured Folders | off | folder icons in the accent colour; ticking it downloads and builds the icons and starts a small service that follows the accent, unticking removes both |
+| Terminal (Ptyxis) | on | |
+| VS Code | on | |
+| btop | on | |
+| Chrome | off | toolbar colour; asks for an admin password on each switch |
+
+Below them: **Update Themes from Omarchy** and **Restore Original Settings…** (everything back as
+it was before the first theme).
 
 ## What a theme changes
 
 | | |
 |---|---|
 | GNOME | dark/light mode, nearest accent colour |
-| Folder icons | Adwaita recoloured to the accent ([Adwaita-colors](https://github.com/dpejoh/Adwaita-colors)), also when the accent is changed by hand; Omarchy's Yaru pick if only that is installed |
-| GNOME apps | *opt-in*: window, sidebar, header and exact accent colours |
+| Folder icons | *option*: Adwaita recoloured to the accent ([Adwaita-colors](https://github.com/dpejoh/Adwaita-colors)), also when the accent is changed by hand |
+| GNOME apps | *option*: window, sidebar, header and exact accent colours |
 | Wallpaper | one of the theme's own backgrounds, chosen in the preview |
 | Ptyxis | a generated terminal palette |
 | VS Code | the theme's named VS Code theme, or one generated from its colours |
 | btop | Omarchy's btop template |
-| Chrome / Chromium | *opt-in*: toolbar colour via browser policy |
+| Chrome / Chromium | *option*: toolbar colour via browser policy |
 
 ## Install
 
 ```bash
 git clone https://github.com/rnakshay/omarchy-themes-gnome
 cd omarchy-themes-gnome
-./install.sh              # the app in Activities, omarchy-theme on PATH, accent-coloured folders
+./install.sh              # the app in Activities, omarchy-theme on PATH
 ./install.sh --uninstall
 ```
 
-Nothing needs root. Re-run `./install.sh` after a GNOME update, so the coloured folder icons are
-rebuilt from the new Adwaita.
+Nothing needs root, and nothing keeps running unless you tick *Coloured Folders*. With it on,
+untick and tick it again after a GNOME update, so the icons are rebuilt from the new Adwaita.
 
 Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` (libwebp-tools).
 
@@ -80,7 +87,8 @@ omarchy-theme set osaka-jade [--skip chrome,vscode,wallpaper] [--wallpaper 2]
 omarchy-theme wallpaper tokyo-night 2   # another theme's wallpaper, current colours kept
 omarchy-theme next-wallpaper            # cycle the current theme's wallpapers
 omarchy-theme colors tokyo-night        # preview a palette in the terminal
-omarchy-theme recolor on|off            # GNOME app recolour
+omarchy-theme options                   # which options are on
+omarchy-theme enable|disable vscode     # options: apps folders ptyxis vscode btop chrome
 omarchy-theme sync                      # pull new and updated themes from Omarchy
 omarchy-theme reset                     # restore everything from before the first theme
 ```
