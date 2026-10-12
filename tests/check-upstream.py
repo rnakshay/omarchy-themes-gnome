@@ -32,14 +32,16 @@ with tempfile.TemporaryDirectory() as tmp:
         mine = ot.resolve(d)
         diff = {k for k in set(upstream) | set(mine) if (upstream.get(k) or "").lower() != (mine.get(k) or "").lower()}
         problems = [f"palette differs: {sorted(diff)}"] if diff else []
-        for t in ("btop.theme.tpl", "vscode-theme.json.tpl", "chromium.theme.tpl", "ptyxis.palette.tpl"):
+        for t in ("btop.theme.tpl", "vscode-theme.json.tpl", "chromium.theme.tpl", "ptyxis.palette.tpl",
+                  "claude.json.tpl"):
             rendered = ot.template(t, {**mine, "title": name})
             if "{{" in rendered:
                 problems.append(f"{t} left a placeholder")
-        try:
-            json.loads(ot.template("vscode-theme.json.tpl", mine))
-        except ValueError as e:
-            problems.append(f"vscode theme is not valid JSON: {e}")
+        for t in ("vscode-theme.json.tpl", "claude.json.tpl"):
+            try:
+                json.loads(ot.template(t, mine))
+            except ValueError as e:
+                problems.append(f"{t} is not valid JSON: {e}")
         print(f"{'FAIL' if problems else 'ok  '} {name}" + "".join(f"\n       {p}" for p in problems))
         failures += bool(problems)
 

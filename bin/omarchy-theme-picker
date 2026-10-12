@@ -35,7 +35,9 @@ MENU_OPTIONS = {
     "apps": "GNOME App Colours",
     "folders": "Coloured Folders",
     "ptyxis": "Terminal (Ptyxis)",
-    "vscode": "VS Code",
+    "gnome-terminal": "GNOME Terminal",
+    "vscode": "VS Code, VSCodium, Cursor",
+    "claude": "Claude Code",
     "btop": "btop",
     "chrome": "Chrome (asks for password)",
 }

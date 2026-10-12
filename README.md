@@ -1,7 +1,7 @@
 # Omarchy Themes for GNOME
 
 Use [Omarchy](https://github.com/omacom/omarchy)'s themes on a regular GNOME desktop: one click
-recolours GNOME, your terminal, VS Code and btop, and sets a matching wallpaper.
+recolours GNOME, your terminal, VS Code, Claude Code and btop, and sets a matching wallpaper.
 Unofficial — not affiliated with or endorsed by Omarchy, the Omacom Foundation, 37signals or
 Basecamp. Omarchy is a trademark of its owner.
 
@@ -44,7 +44,9 @@ wallpaper. Apps that aren't installed aren't listed.
 | GNOME App Colours | off | windows, sidebars and headers in the theme's colours, not just the accent (see *Design*); apps pick it up when reopened |
 | Coloured Folders | off | folder icons in the accent colour; ticking it downloads and builds the icons and starts a small service that follows the accent, unticking removes both |
 | Terminal (Ptyxis) | on | |
-| VS Code | on | |
+| GNOME Terminal | on | the default profile |
+| VS Code, VSCodium, Cursor | on | whichever are installed, VS Code Insiders too |
+| Claude Code | on | a theme in `~/.claude/themes/`, chosen with the `theme` setting; open sessions recolour live |
 | btop | on | |
 | Chrome | off | toolbar colour; asks for an admin password on each switch |
 
@@ -59,8 +61,9 @@ it was before the first theme).
 | Folder icons | *option*: Adwaita recoloured to the accent ([Adwaita-colors](https://github.com/dpejoh/Adwaita-colors)), also when the accent is changed by hand |
 | GNOME apps | *option*: window, sidebar, header and exact accent colours |
 | Wallpaper | one of the theme's own backgrounds, chosen in the preview |
-| Ptyxis | a generated terminal palette |
-| VS Code | the theme's named VS Code theme, or one generated from its colours |
+| Ptyxis / GNOME Terminal | a generated terminal palette / the default profile's colours |
+| VS Code, VSCodium, Cursor, Insiders | the theme's named VS Code theme, or one generated from its colours (also when an editor's store lacks the named one, as VSCodium's Open VSX can) |
+| Claude Code | Omarchy's Claude Code theme: accent, borders, diff tints and ~35 more colours |
 | btop | Omarchy's btop template |
 | Chrome / Chromium | *option*: toolbar colour via browser policy |
 
@@ -92,7 +95,7 @@ omarchy-theme wallpaper tokyo-night 2   # another theme's wallpaper, current col
 omarchy-theme next-wallpaper            # cycle the current theme's wallpapers
 omarchy-theme colors tokyo-night        # preview a palette in the terminal
 omarchy-theme options                   # which options are on
-omarchy-theme enable|disable vscode     # options: apps folders ptyxis vscode btop chrome
+omarchy-theme enable|disable vscode     # options: apps folders ptyxis gnome-terminal vscode claude btop chrome
 omarchy-theme sync                      # pull new and updated themes from Omarchy
 omarchy-theme reset                     # restore everything from before the first theme
 ```
@@ -112,14 +115,16 @@ omarchy-theme reset                     # restore everything from before the fir
 - **Restore Original Settings** goes back to how things were before the first theme was applied
   (or before the first one after the last restore); changes you made by hand in between, such
   as picking your own wallpaper, aren't remembered.
+- **Claude Code's `theme` setting is changed** to `custom:omarchy` (the rest of
+  `~/.claude/settings.json` is kept). Restore puts your previous choice back.
 - **Neovim isn't themed** yet: Omarchy's Neovim themes assume a LazyVim setup.
 
 ## Design: stay small, survive updates
 
 - **An app, not a Shell extension.** Nothing runs inside GNOME Shell, so GNOME releases don't
   break it. The app only calls `omarchy-theme`, which does the work.
-- **Supported interfaces by default**: gsettings, Ptyxis palette files, VS Code settings, btop
-  themes, Chrome enterprise policy. No GNOME Shell themes.
+- **Supported interfaces by default**: gsettings, Ptyxis palette files, VS Code and Claude Code
+  settings and theme files, btop themes, Chrome enterprise policy. No GNOME Shell themes.
 - **The one unsupported piece is opt-in.** App recolour uses libadwaita's documented CSS
   variables via `gtk.css`, which GNOME doesn't promise to keep honouring.
   `tests/check-gtk-recolor.py` renders a real libadwaita window and checks the pixels, so a

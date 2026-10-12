@@ -38,7 +38,8 @@ ORIGINAL = STATE / "original.json"
 
 SETTINGS = CONFIG / "settings.json"
 
-TARGETS = ["gnome", "apps", "wallpaper", "ptyxis", "vscode", "btop", "chrome"]
+TARGETS = ["gnome", "apps", "wallpaper", "ptyxis", "gnome-terminal", "vscode", "claude", "btop", "chrome"]
+APP_TARGETS = {"ptyxis", "gnome-terminal", "vscode", "claude", "btop", "chrome"}  # each an option, on unless turned off
 
 
 def log(ok, target, msg=""):
@@ -279,22 +280,36 @@ VSCODE_KEYS = ["workbench.colorTheme", "workbench.preferredDarkColorTheme", "wor
 
 
 def snapshot():
-    if ORIGINAL.exists():
-        return
-    snap = {"gsettings": {f"{s} {k}": gget(s, k) for s, k in GNOME_KEYS}}
+    """Record what a theme is about to change, once per thing: an entry already in the snapshot is
+    never overwritten, but apps supported (or installed) later get theirs on their first switch."""
+    snap = json.loads(ORIGINAL.read_text()) if ORIGINAL.is_file() else {}
+    fresh = {"gsettings": lambda: {f"{s} {k}": gget(s, k) for s, k in GNOME_KEYS},
+             "btop": lambda: (HOME / ".config/btop/btop.conf").read_text()
+             if (HOME / ".config/btop/btop.conf").is_file() else None,
+             "chrome": lambda: {str(d): (d / "color.json").read_text() if (d / "color.json").is_file() else None
+                                for d in chrome_policy_dirs()}}
     profile = ptyxis_profile()
     if profile:
-        snap["ptyxis"] = gget(profile, "palette")
-    settings = vscode_settings()
-    if settings.is_file():
-        text = settings.read_text()
-        snap["vscode"] = {k: jsonc_get(text, k) for k in VSCODE_KEYS}
-    conf = HOME / ".config/btop/btop.conf"
-    snap["btop"] = conf.read_text() if conf.is_file() else None
-    snap["chrome"] = {str(d): (d / "color.json").read_text() if (d / "color.json").is_file() else None
-                      for d in chrome_policy_dirs()}
-    STATE.mkdir(parents=True, exist_ok=True)
-    ORIGINAL.write_text(json.dumps(snap, indent=2) + "\n")
+        fresh["ptyxis"] = lambda: gget(profile, "palette")
+    term = gnome_terminal_profile()
+    if term:
+        fresh["gnome-terminal"] = lambda: {k: gget(term, k) for k in GNOME_TERMINAL_KEYS}
+    for editor in installed_editors():
+        settings = editor["settings"]
+        fresh[editor["key"]] = lambda settings=settings: {k: jsonc_get(settings.read_text(), k) for k in VSCODE_KEYS} \
+            if settings.is_file() else {k: None for k in VSCODE_KEYS}
+    if claude_available():
+        fresh["claude"] = lambda: claude_settings().get("theme")
+    added = {}
+    for key, get in fresh.items():
+        if key not in snap:
+            try:
+                added[key] = get()
+            except (OSError, ValueError, subprocess.CalledProcessError) as e:
+                print(f"  – couldn't record {key} for reset: {e}")
+    if added:
+        STATE.mkdir(parents=True, exist_ok=True)
+        ORIGINAL.write_text(json.dumps({**snap, **added}, indent=2) + "\n")
 
 
 # ── Targets ──────────────────────────────────────────────────────────────────
@@ -383,8 +398,9 @@ def save_settings(settings):
 # Shared by the CLI and the app (its ☰ menu), so both always agree.
 
 OPTIONS = {"apps": "GNOME app colours", "folders": "coloured folders", "ptyxis": "terminal (Ptyxis)",
-           "vscode": "VS Code", "btop": "btop", "chrome": "Chrome toolbar"}
-OPTION_APPS = {"ptyxis": "ptyxis", "vscode": "code", "btop": "btop"}
+           "gnome-terminal": "GNOME Terminal", "vscode": "VS Code, VSCodium, Cursor", "claude": "Claude Code",
+           "btop": "btop", "chrome": "Chrome toolbar"}
+OPTION_APPS = {"ptyxis": "ptyxis", "gnome-terminal": "gnome-terminal", "btop": "btop"}
 FOLLOW_UNIT = "omarchy-theme-follow-accent.service"
 UNIT_DIR = HOME / ".config/systemd/user"
 ICONS_SRC = DATA / "adwaita-colors"
@@ -418,6 +434,10 @@ def available(option):
     """Options for apps that aren't installed are hidden in the app."""
     if option in OPTION_APPS:
         return shutil.which(OPTION_APPS[option]) is not None
+    if option == "vscode":
+        return bool(installed_editors())
+    if option == "claude":
+        return claude_available()
     if option == "chrome":
         return bool(chrome_policy_dirs()) or any(shutil.which(b) for b in ("google-chrome-stable", "chromium-browser"))
     return True
@@ -572,6 +592,57 @@ def apply_ptyxis(name, theme_dir, trusted, c):
     log(True, "ptyxis", f"palette {pid}")
 
 
+GNOME_TERMINAL_KEYS = ["use-theme-colors", "foreground-color", "background-color", "palette",
+                       "bold-color-same-as-fg", "cursor-colors-set", "cursor-background-color",
+                       "cursor-foreground-color", "highlight-colors-set", "highlight-background-color",
+                       "highlight-foreground-color"]
+
+
+def gnome_terminal_profile():
+    if not shutil.which("gnome-terminal"):
+        return None
+    uuid = gget("org.gnome.Terminal.ProfilesList", "default").strip("'")
+    return f"org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{uuid}/"
+
+
+def apply_gnome_terminal(name, theme_dir, trusted, c):
+    profile = gnome_terminal_profile()
+    if not profile:
+        return log(False, "gnome-terminal", "not installed")
+    q = lambda key: f"'{c[key]}'"  # GVariant strings; colour values are already checked to be plain
+    values = {
+        "use-theme-colors": "false",
+        "foreground-color": q("foreground"),
+        "background-color": q("background"),
+        "palette": "[" + ", ".join(q(f"color{i}") for i in range(16)) + "]",
+        "bold-color-same-as-fg": "true",
+        "cursor-colors-set": "true",
+        "cursor-background-color": q("cursor"),
+        "cursor-foreground-color": q("background"),
+        "highlight-colors-set": "true",
+        "highlight-background-color": q("selection_background"),
+        "highlight-foreground-color": q("selection_foreground"),
+    }
+    for key, value in values.items():
+        gset(profile, key, value)
+    log(True, "gnome-terminal", "default profile")
+
+
+# ── VS Code and its forks ──
+EDITORS = [  # command, config folder name, extensions folder, snapshot key
+    ("code", "Code", ".vscode/extensions", "vscode"),
+    ("code-insiders", "Code - Insiders", ".vscode-insiders/extensions", "vscode-insiders"),
+    ("codium", "VSCodium", ".vscode-oss/extensions", "vscodium"),
+    ("cursor", "Cursor", ".cursor/extensions", "cursor"),
+]
+
+
+def installed_editors():
+    return [{"cmd": cmd, "settings": HOME / ".config" / folder / "User/settings.json", "extensions": HOME / ext,
+             "key": key, "name": folder}
+            for cmd, folder, ext, key in EDITORS if shutil.which(cmd)]
+
+
 def vscode_settings():
     return HOME / ".config/Code/User/settings.json"
 
@@ -591,14 +662,12 @@ def jsonc_set(text, key, value):
     return text.replace("{", "{\n  %s: %s," % (json.dumps(key), json.dumps(value)), 1)
 
 
-def vscode_extension_installed(ext_id):
-    base = HOME / ".vscode/extensions"
+def vscode_extension_installed(ext_id, base):
     return base.is_dir() and any(d.name.lower().startswith(ext_id.lower() + "-") for d in base.iterdir())
 
 
-def install_generated_vscode_theme(c):
+def install_generated_vscode_theme(c, base):
     """Untrusted or descriptor-less themes: build the colours into a local extension, as Omarchy does."""
-    base = HOME / ".vscode/extensions"
     ext = base / "omarchy-themes-gnome"
     (ext / "themes").mkdir(parents=True, exist_ok=True)
     theme_json = template("vscode-theme.json.tpl", c)
@@ -623,29 +692,84 @@ def install_generated_vscode_theme(c):
 
 
 def apply_vscode(name, theme_dir, trusted, c):
-    if not shutil.which("code"):
+    editors = installed_editors()
+    if not editors:
         return log(False, "vscode", "not installed")
     descriptor = theme_dir / "vscode.json"
-    theme_name = None
-    if trusted and descriptor.is_file():
+    named = json.loads(descriptor.read_text()) if trusted and descriptor.is_file() else {}
+    done = []
+    for editor in editors:
+        theme_name = None
+        ext_id = named.get("extension", "")
         # A VS Code extension is arbitrary code, so only official themes may name one.
-        d = json.loads(descriptor.read_text())
-        theme_name, ext_id = d.get("name"), d.get("extension", "")
-        if re.fullmatch(r"[A-Za-z0-9._-]+", ext_id) and not vscode_extension_installed(ext_id):
-            print(f"    installing VS Code extension {ext_id}…")
-            run("code", "--install-extension", ext_id)
-    if not theme_name:
-        theme_name = install_generated_vscode_theme(c)
+        if named.get("name") and re.fullmatch(r"[A-Za-z0-9._-]+", ext_id):
+            if not vscode_extension_installed(ext_id, editor["extensions"]):
+                print(f"    installing {ext_id} in {editor['name']}…")
+                # VSCodium's store (Open VSX) may not carry it; the generated theme stands in.
+                run(editor["cmd"], "--install-extension", ext_id, check=False)
+            if vscode_extension_installed(ext_id, editor["extensions"]):
+                theme_name = named["name"]
+        if not theme_name:
+            theme_name = install_generated_vscode_theme(c, editor["extensions"])
 
-    path = vscode_settings()
+        path = editor["settings"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = path.read_text() if path.is_file() else "{\n}\n"
+        text = jsonc_set(text, "workbench.colorTheme", theme_name)
+        # With window.autoDetectColorScheme on, VS Code ignores colorTheme in favour of these.
+        key = "workbench.preferredLightColorTheme" if c["mode"] == "light" else "workbench.preferredDarkColorTheme"
+        text = jsonc_set(text, key, theme_name)
+        path.write_text(text)
+        done.append(f"{editor['name']}: {theme_name}")
+    log(True, "vscode", "; ".join(done))
+
+
+# ── Claude Code ──
+# Claude Code reads custom themes from <config>/themes/*.json and hot-reloads them, so open
+# sessions recolour on a switch. Omarchy's claude.json template supplies the colours.
+
+def claude_dir():
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
+
+
+def claude_available():
+    return shutil.which("claude") is not None or claude_dir().is_dir()
+
+
+def claude_settings():
+    try:
+        return json.loads((claude_dir() / "settings.json").read_text())
+    except FileNotFoundError:
+        return {}
+
+
+def write_atomic(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text() if path.is_file() else "{\n}\n"
-    text = jsonc_set(text, "workbench.colorTheme", theme_name)
-    # With window.autoDetectColorScheme on, VS Code ignores colorTheme in favour of these.
-    key = "workbench.preferredLightColorTheme" if c["mode"] == "light" else "workbench.preferredDarkColorTheme"
-    text = jsonc_set(text, key, theme_name)
-    path.write_text(text)
-    log(True, "vscode", theme_name)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+def set_claude_theme(value):
+    path = claude_dir() / "settings.json"
+    settings = claude_settings()  # a broken settings.json raises, and is left alone
+    if settings.get("theme") == value:
+        return
+    if value is None:
+        settings.pop("theme", None)
+    else:
+        settings["theme"] = value
+    write_atomic(path, json.dumps(settings, indent=2) + "\n")
+
+
+def apply_claude(name, theme_dir, trusted, c):
+    if not claude_available():
+        return log(False, "claude", "not installed")
+    theme = template("claude.json.tpl", c)
+    json.loads(theme)  # never hand Claude Code a broken file
+    write_atomic(claude_dir() / "themes/omarchy.json", theme)
+    set_claude_theme("custom:omarchy")
+    log(True, "claude", "custom:omarchy")
 
 
 def apply_btop(name, theme_dir, trusted, c):
@@ -717,6 +841,7 @@ def apply_chrome(name, theme_dir, trusted, c):
 
 
 APPLY = {"gnome": apply_gnome, "apps": apply_apps, "wallpaper": apply_wallpaper, "ptyxis": apply_ptyxis,
+         "gnome-terminal": apply_gnome_terminal, "claude": apply_claude,
          "vscode": apply_vscode, "btop": apply_btop, "chrome": apply_chrome}
 
 
@@ -746,7 +871,7 @@ def cmd_set(args):
         if target in skip:
             log(False, target, "skipped")
             continue
-        if target in ("ptyxis", "vscode", "btop", "chrome") and not enabled(target):
+        if target in APP_TARGETS and not enabled(target):
             log(False, target, f"off (omarchy-theme enable {target})")
             continue
         try:
@@ -821,7 +946,7 @@ def cmd_disable(args):
 def cmd_options(args):
     for option, label in OPTIONS.items():
         if available(option):
-            print(f"{'✓' if enabled(option) else ' '} {option:8} {label}")
+            print(f"{'✓' if enabled(option) else ' '} {option:14} {label}")
 
 
 def cmd_recolor(args):  # kept for scripts written against the first version
@@ -874,11 +999,22 @@ def cmd_reset(args):
         gset(profile, "palette", snap["ptyxis"])
         for old in (HOME / ".local/share/org.gnome.Ptyxis/palettes").glob("omarchy-*.palette"):
             old.unlink()
-    if snap.get("vscode") is not None and vscode_settings().is_file():
-        text = vscode_settings().read_text()
-        for k, v in snap["vscode"].items():
-            text = jsonc_set(text, k, v)
-        vscode_settings().write_text(text)
+    term = gnome_terminal_profile()
+    if term and "gnome-terminal" in snap:
+        for k, v in snap["gnome-terminal"].items():
+            gset(term, k, v)
+    for editor in installed_editors():
+        if snap.get(editor["key"]) is not None and editor["settings"].is_file():
+            text = editor["settings"].read_text()
+            for k, v in snap[editor["key"]].items():
+                text = jsonc_set(text, k, v)
+            editor["settings"].write_text(text)
+    if "claude" in snap and claude_available():
+        try:
+            set_claude_theme(snap["claude"])
+            (claude_dir() / "themes/omarchy.json").unlink(missing_ok=True)
+        except ValueError:
+            print("  – claude: settings.json isn't valid JSON; left as is")
     conf = HOME / ".config/btop/btop.conf"
     # btop rewrites btop.conf on exit, so the theme file itself must go too; btop falls back to Default.
     (HOME / ".config/btop/themes/omarchy.theme").unlink(missing_ok=True)
