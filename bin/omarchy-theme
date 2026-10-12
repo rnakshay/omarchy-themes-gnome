@@ -744,6 +744,8 @@ def cmd_reset(args):
             text = jsonc_set(text, k, v)
         vscode_settings().write_text(text)
     conf = HOME / ".config/btop/btop.conf"
+    # btop rewrites btop.conf on exit, so the theme file itself must go too; btop falls back to Default.
+    (HOME / ".config/btop/themes/omarchy.theme").unlink(missing_ok=True)
     if snap.get("btop") is None:
         conf.unlink(missing_ok=True)
     else:
