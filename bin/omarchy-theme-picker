@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Point-and-click theme picker. All the work is done by omarchy-theme; this only calls it."""
+
+import importlib.machinery
+import importlib.util
+import json
+import sys
+import threading
+from pathlib import Path
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
+
+APP_ID = "io.github.rnakshay.OmarchyThemes"
+CLI = Path(__file__).resolve().parent / "omarchy-theme"
+
+# Reuse the CLI's theme discovery and colour resolver rather than duplicating them.
+_loader = importlib.machinery.SourceFileLoader("omarchy_theme", str(CLI))
+_spec = importlib.util.spec_from_loader("omarchy_theme", _loader)
+ot = importlib.util.module_from_spec(_spec)
+_loader.exec_module(ot)
+
+THUMBS = ot.DATA / "thumbnails"
+PREFS = ot.CONFIG / "picker.json"
+THUMB_W, THUMB_H = 320, 180
+SWATCHES = ["background", "foreground", "accent", "red", "green", "yellow", "blue", "magenta"]
+
+CSS = """
+.theme-card { padding: 6px; border-radius: 14px; }
+.theme-card picture { border-radius: 10px; }
+.swatch { min-width: 18px; min-height: 10px; border-radius: 3px; }
+"""
+
+
+def load_prefs():
+    try:
+        return json.loads(PREFS.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_prefs(prefs):
+    PREFS.parent.mkdir(parents=True, exist_ok=True)
+    PREFS.write_text(json.dumps(prefs, indent=2) + "\n")
+
+
+def thumbnail(name, theme_dir):
+    """Previews are 2560×1440; scale each once and keep it, so the window opens fast."""
+    src = theme_dir / "preview.png"
+    if not src.is_file():
+        bgs = sorted((theme_dir / "backgrounds").glob("*.*"))
+        src = bgs[0] if bgs else None
+    if src is None:
+        return None
+    dest = THUMBS / f"{name}.png"
+    if not dest.is_file() or dest.stat().st_mtime < src.stat().st_mtime:
+        THUMBS.mkdir(parents=True, exist_ok=True)
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(src), THUMB_W * 2, THUMB_H * 2, True)
+        except GLib.Error:
+            return None
+        pixbuf.savev(str(dest), "png", [], [])
+    return dest
+
+
+class Card(Gtk.FlowBoxChild):
+    def __init__(self, name, theme_dir, colors):
+        super().__init__()
+        self.name = name
+        self.theme_dir = theme_dir
+        self.add_css_class("theme-card")
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        overlay = Gtk.Overlay()
+        self.picture = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True)
+        self.picture.set_size_request(THUMB_W, THUMB_H)
+        overlay.set_child(self.picture)
+        self.check = Gtk.Image(icon_name="object-select-symbolic", pixel_size=20,
+                               halign=Gtk.Align.END, valign=Gtk.Align.START, margin_top=8, margin_end=8,
+                               visible=False)
+        self.check.add_css_class("osd")
+        self.check.add_css_class("circular")
+        overlay.add_overlay(self.check)
+        box.append(overlay)
+
+        row = Gtk.Box(spacing=8)
+        label = Gtk.Label(label=ot.title(name), xalign=0, hexpand=True)
+        label.add_css_class("heading")
+        row.append(label)
+        if colors.get("mode") == "light":
+            mode = Gtk.Label(label="light")
+            mode.add_css_class("dim-label")
+            mode.add_css_class("caption")
+            row.append(mode)
+        box.append(row)
+
+        swatches = Gtk.Box(spacing=3)
+        provider = Gtk.CssProvider()
+        rules = []
+        for i, key in enumerate(SWATCHES):
+            value = colors.get(key, colors.get("blue"))
+            if not ot.HEX_RE.match(value or ""):
+                continue
+            sw = Gtk.Box(hexpand=True)
+            sw.add_css_class("swatch")
+            sw.add_css_class(f"sw-{name}-{i}")
+            rules.append(f".sw-{name}-{i} {{ background: {value}; }}")
+            swatches.append(sw)
+        provider.load_from_string("\n".join(rules))
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        box.append(swatches)
+        self.set_child(box)
+        self.set_tooltip_text(f"Apply {ot.title(name)}")
+
+    def set_current(self, current):
+        self.check.set_visible(current)
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Themes", default_width=1080, default_height=720)
+        self.prefs = load_prefs()
+        self.busy = False
+
+        view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        self.spinner = Adw.Spinner(visible=False)
+        header.pack_start(self.spinner)
+
+        wall = Gtk.Button(icon_name="image-x-generic-symbolic", tooltip_text="Next wallpaper for this theme")
+        wall.connect("clicked", lambda *_: self.run(["next-wallpaper"], "Wallpaper changed"))
+        header.pack_end(self._menu())
+        header.pack_end(wall)
+        view.add_top_bar(header)
+
+        self.toasts = Adw.ToastOverlay()
+        self.flow = Gtk.FlowBox(homogeneous=True, min_children_per_line=2, max_children_per_line=5,
+                                selection_mode=Gtk.SelectionMode.NONE, activate_on_single_click=True,
+                                row_spacing=12, column_spacing=12, valign=Gtk.Align.START,
+                                margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
+        self.flow.connect("child-activated", self.on_activated)
+        scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        scroller.set_child(self.flow)
+        self.toasts.set_child(scroller)
+        view.set_content(self.toasts)
+        self.set_content(view)
+        self.populate()
+
+    def _menu(self):
+        menu = Gio.Menu()
+        menu.append("Also Theme Chrome (asks for password)", "win.chrome")
+        menu.append("Update Themes from Omarchy", "win.sync")
+        menu.append("Restore Original Settings…", "win.reset")
+
+        chrome = Gio.SimpleAction.new_stateful("chrome", None,
+                                               GLib.Variant.new_boolean(self.prefs.get("chrome", False)))
+        chrome.connect("change-state", self.on_chrome)
+        self.add_action(chrome)
+        sync = Gio.SimpleAction.new("sync", None)
+        sync.connect("activate", lambda *_: self.run(["sync"], "Themes updated", self.populate))
+        self.add_action(sync)
+        reset = Gio.SimpleAction.new("reset", None)
+        reset.connect("activate", self.on_reset)
+        self.add_action(reset)
+        return Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, primary=True)
+
+    def populate(self):
+        self.flow.remove_all()
+        self.cards = {}
+        current = ot.current()
+        for name, (theme_dir, _) in ot.all_themes().items():
+            try:
+                colors = ot.resolve(theme_dir)
+            except Exception:
+                continue
+            card = Card(name, theme_dir, colors)
+            card.set_current(name == current)
+            self.flow.append(card)
+            self.cards[name] = card
+        threading.Thread(target=self._load_thumbnails, args=(list(self.cards.values()),), daemon=True).start()
+
+    def _load_thumbnails(self, cards):
+        for card in cards:
+            path = thumbnail(card.name, card.theme_dir)
+            if path:
+                GLib.idle_add(card.picture.set_filename, str(path))
+
+    def on_chrome(self, action, value):
+        action.set_state(value)
+        self.prefs["chrome"] = value.get_boolean()
+        save_prefs(self.prefs)
+
+    def on_activated(self, flow, card):
+        args = ["set", card.name]
+        if not self.prefs.get("chrome", False):
+            args += ["--skip", "chrome"]
+
+        def done():
+            for name, c in self.cards.items():
+                c.set_current(name == card.name)
+        self.run(args, f"{ot.title(card.name)} applied", done)
+
+    def on_reset(self, *_):
+        dialog = Adw.AlertDialog(heading="Restore original settings?",
+                                 body="Puts GNOME, the wallpaper, Ptyxis, VS Code, btop and Chrome back "
+                                      "to how they were before the first theme was applied.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("reset", "Restore")
+        dialog.set_response_appearance("reset", Adw.ResponseAppearance.DESTRUCTIVE)
+
+        def response(d, r):
+            if r == "reset":
+                self.run(["reset"], "Original settings restored", self.populate)
+        dialog.connect("response", response)
+        dialog.present(self)
+
+    def run(self, args, success, then=None):
+        """Run the CLI without blocking the window; one job at a time."""
+        if self.busy:
+            return
+        self.busy = True
+        self.spinner.set_visible(True)
+        self.flow.set_sensitive(False)
+        proc = Gio.Subprocess.new([sys.executable, str(CLI), *args],
+                                  Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+
+        def finished(p, result):
+            _, out, _ = p.communicate_utf8_finish(result)
+            self.busy = False
+            self.spinner.set_visible(False)
+            self.flow.set_sensitive(True)
+            failed = [line.strip() for line in (out or "").splitlines() if "failed" in line]
+            if p.get_exit_status() != 0:
+                message = (out or "").strip().splitlines()[-1:] or ["Something went wrong"]
+                self.toasts.add_toast(Adw.Toast(title=GLib.markup_escape_text(message[0]), timeout=6))
+                return
+            if then:
+                then()
+            title = f"{success} — {failed[0]}" if failed else success
+            self.toasts.add_toast(Adw.Toast(title=GLib.markup_escape_text(title),
+                                            timeout=4 if not failed else 8))
+        proc.communicate_utf8_async(None, None, finished)
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        provider = Gtk.CssProvider()
+        provider.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def do_activate(self):
+        (self.props.active_window or Window(self)).present()
+
+
+if __name__ == "__main__":
+    sys.exit(App().run(sys.argv))

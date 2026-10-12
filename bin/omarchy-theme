@@ -33,6 +33,7 @@ UPSTREAM_TEMPLATES = UPSTREAM / "default/themed"
 USER_THEMES = CONFIG / "themes"
 
 CURRENT = STATE / "current"
+WALLPAPER = STATE / "wallpaper"
 ORIGINAL = STATE / "original.json"
 
 TARGETS = ["gnome", "wallpaper", "ptyxis", "vscode", "btop", "chrome"]
@@ -553,6 +554,18 @@ def cmd_set(args):
         except Exception as e:  # one broken target must not stop the rest
             log(False, target, f"failed: {e}")
     CURRENT.write_text(name + "\n")
+    WALLPAPER.write_text(f"{args.wallpaper}\n")
+
+
+def cmd_next_wallpaper(args):
+    name = current()
+    themes = all_themes()
+    if name not in themes:
+        sys.exit("No theme applied yet.")
+    index = int(WALLPAPER.read_text()) + 1 if WALLPAPER.is_file() else 2
+    theme_dir, trusted = themes[name]
+    apply_wallpaper(name, theme_dir, trusted, None, index)
+    WALLPAPER.write_text(f"{index}\n")
 
 
 def cmd_current(args):
@@ -604,6 +617,7 @@ def cmd_reset(args):
         except (subprocess.CalledProcessError, FileNotFoundError):
             print("  – chrome: needs admin rights; left as is")
     CURRENT.unlink(missing_ok=True)
+    WALLPAPER.unlink(missing_ok=True)
     ORIGINAL.unlink()
     print("Restored the settings from before the first theme was applied.")
 
@@ -618,6 +632,8 @@ def main():
     s.add_argument("--wallpaper", type=int, default=1, help="which of the theme's backgrounds (1-based)")
     s.set_defaults(fn=cmd_set)
     sub.add_parser("current", help="print the current theme").set_defaults(fn=cmd_current)
+    sub.add_parser("next-wallpaper", help="cycle to the current theme's next background").set_defaults(
+        fn=cmd_next_wallpaper)
     c = sub.add_parser("colors", help="show a theme's resolved palette")
     c.add_argument("theme", nargs="?")
     c.set_defaults(fn=cmd_colors)
