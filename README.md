@@ -75,7 +75,9 @@ cd omarchy-themes-gnome
 Nothing needs root, and nothing keeps running unless you tick *Coloured Folders*. With it on,
 untick and tick it again after a GNOME update, so the icons are rebuilt from the new Adwaita.
 
-Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+, and `dwebp` (libwebp-tools).
+Requires Python 3.11+, git, PyGObject with GTK 4 / libadwaita 1.6+; `dwebp` (libwebp-tools) and
+glycin's GObject bindings are recommended for `.webp` wallpapers. `install.sh` checks and names the
+packages to install on Fedora, Debian/Ubuntu and Arch. Made and tested on Fedora 44, GNOME 50.
 
 ## Command line
 
@@ -92,6 +94,23 @@ omarchy-theme enable|disable vscode     # options: apps folders ptyxis vscode bt
 omarchy-theme sync                      # pull new and updated themes from Omarchy
 omarchy-theme reset                     # restore everything from before the first theme
 ```
+
+## Known rough edges
+
+- **Open GNOME apps keep their old colours** until reopened when *GNOME App Colours* is on —
+  GTK only reads its style file at start.
+- **The top bar and Activities overview** only take the accent colour, not the full palette;
+  recolouring them needs a GNOME Shell theme, which this deliberately avoids.
+- **Layout stays GNOME's.** Omarchy's preview screenshots are its Hyprland desktop (tiled windows,
+  its own bar); here you get the colours and wallpaper, not that layout.
+- **Accent colour is the nearest of GNOME's nine**, unless *GNOME App Colours* is on, which uses
+  the theme's exact accent inside apps.
+- **Chrome asks for an admin password on every switch** — the toolbar colour is set through a
+  browser policy file under `/etc`. Off by default for that reason.
+- **Restore Original Settings** goes back to how things were before the first theme was applied
+  (or before the first one after the last restore); changes you made by hand in between, such
+  as picking your own wallpaper, aren't remembered.
+- **Neovim isn't themed** yet: Omarchy's Neovim themes assume a LazyVim setup.
 
 ## Design: stay small, survive updates
 
