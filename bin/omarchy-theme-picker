@@ -324,10 +324,7 @@ class Window(Adw.ApplicationWindow):
         self.spinner = Adw.Spinner(visible=False)
         header.pack_start(self.spinner)
 
-        wall = Gtk.Button(icon_name="image-x-generic-symbolic", tooltip_text="Next wallpaper for this theme")
-        wall.connect("clicked", lambda *_: self.run(["next-wallpaper"], "Wallpaper changed"))
         header.pack_end(self._menu())
-        header.pack_end(wall)
         view.add_top_bar(header)
 
         self.toasts = Adw.ToastOverlay()
